@@ -1,0 +1,5 @@
+# Build and test output
+/k6
+*.test
+*.out
+coverage.*
