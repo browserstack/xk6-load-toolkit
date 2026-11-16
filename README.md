@@ -140,10 +140,49 @@ When the number of distinct time series (metric plus indexed tags) exceeds
 `exitCode` (default 105) and `message`, in which `{count}` and `{limit}` are
 replaced. Buffered rows are still flushed. `maxTimeSeries <= 0` disables it.
 
+## Building k6 with the bundled extensions
+
+`extensions.json` lists the k6 version (`k6Version`), this module (`repoPath: "."`)
+and the third-party extensions bundled with it, each pinned to one version.
+`build.sh` turns it into a static binary with
+[xk6](https://github.com/grafana/xk6) (needs Go, xk6 and jq):
+
+```sh
+GOOS=linux GOARCH=amd64 ./build.sh --output dist/k6-linux-amd64
+scripts/release-gate.sh --binary dist/k6-linux-amd64 --arch amd64
+```
+
+`scripts/release-gate.sh` reads the binary's Go build information
+(`go version -m`) and fails unless it is linux/`<arch>` with CGO off, links
+`go.k6.io/k6/v2` at `k6Version`, links every pinned extension at exactly its
+version (not replaced) and this module, and links no other xk6 module than the
+ones k6 itself requires.
+
+## Releases
+
+Pushing a `v*` tag runs `.github/workflows/release.yml`: tests and the denylist,
+then a linux/amd64 and a linux/arm64 build, the release gate on each binary, and
+only then a GitHub Release with `k6-linux-amd64`, `k6-linux-arm64`, `SHA256SUMS`,
+`extensions.json`, `LICENSE` and `NOTICE`. The release notes record the k6, xk6
+and Go versions and link the tag's source.
+
+To verify a download:
+
+```sh
+sha256sum -c --ignore-missing SHA256SUMS
+go version -m k6-linux-amd64          # module list and versions
+scripts/release-gate.sh --binary k6-linux-amd64 --arch amd64 --manifest extensions.json
+```
+
+`scripts/toolkit-tree-hash.sh <dir>` prints a hash of the compiled files
+(`*.go`, `go.mod`, `go.sum`), for consumers that keep a copy of the source.
+
 ## Tests
 
 ```sh
 go test ./...
+scripts/denylist.sh
+scripts/release-gate_test.sh
 ```
 
 ## License

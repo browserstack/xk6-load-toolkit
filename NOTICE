@@ -1,0 +1,28 @@
+xk6-load-toolkit
+Licensed under the GNU Affero General Public License v3.0 (see LICENSE).
+
+The k6 binaries published with each release of this repository are built with
+xk6 from the components below, at the exact versions recorded in that release's
+extensions.json and release notes. Each component remains under its own licence;
+its source is available from the module path at that version.
+
+k6 (go.k6.io/k6/v2), Grafana Labs                       AGPL-3.0
+github.com/grafana/xk6-dns                              AGPL-3.0
+github.com/grafana/xk6-faker                            AGPL-3.0
+github.com/grafana/xk6-icmp                             AGPL-3.0
+github.com/grafana/xk6-mqtt                             AGPL-3.0
+github.com/grafana/xk6-redis                            Apache-2.0
+github.com/grafana/xk6-client-prometheus-remote         Apache-2.0
+github.com/grafana/xk6-sql                              Apache-2.0
+github.com/grafana/xk6-sql-driver-azuresql              AGPL-3.0
+github.com/grafana/xk6-sql-driver-clickhouse            AGPL-3.0
+github.com/grafana/xk6-sql-driver-mysql                 AGPL-3.0
+github.com/grafana/xk6-sql-driver-postgres              AGPL-3.0
+github.com/grafana/xk6-sql-driver-sqlserver             AGPL-3.0
+github.com/grafana/xk6-tcp                              AGPL-3.0
+github.com/grafana/xk6-tls                              AGPL-3.0
+github.com/grafana/xk6-client-tracing                   AGPL-3.0
+
+Transitive Go module dependencies are listed, with versions, in each binary's
+build information (`go version -m <binary>`); their licences are those of the
+respective modules.
