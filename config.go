@@ -9,7 +9,10 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strings"
 	"time"
+
+	"go.k6.io/k6/v2/errext/exitcodes"
 )
 
 const (
@@ -189,10 +192,28 @@ var (
 
 func init() {
 	loadedConfig, configErr = loadFromEnv()
+	if errors.Is(configErr, errUnreadable) {
+		// Nothing in the document could be read, so the variables it meant to hide
+		// may still be set. Stop now, before k6 runs any script code.
+		fmt.Fprintln(os.Stderr, errStartup)
+		os.Exit(int(exitcodes.InvalidConfig))
+	}
 }
+
+// errUnreadable marks a configuration that cannot be read as a JSON object;
+// init() aborts the process on it. Its message is errStartup's.
+var errUnreadable = fmt.Errorf("%w", errStartup)
 
 // loadFromEnv reads, validates and unsets the configuration. An absent
 // variable means every capability is off.
+//
+// The keys in env.unset are removed before strict validation, by a lenient
+// pass that ignores every other field and anything after the document, so a
+// mistake elsewhere never leaves them visible in __ENV. If that pass hits
+// malformed JSON, loadFromEnv returns errUnreadable and init() exits before
+// any script code runs. The producer of the variable must emit valid JSON,
+// with env before the other sections so its keys are read even when a later
+// field is malformed.
 func loadFromEnv() (*Config, error) {
 	raw, present := os.LookupEnv(ConfigEnv)
 	diagnostics := os.Getenv(DiagnosticsEnv)
@@ -202,17 +223,54 @@ func loadFromEnv() (*Config, error) {
 		return &Config{Version: SchemaVersion}, nil
 	}
 
-	cfg, err := ParseConfig([]byte(raw))
-	if cfg != nil && cfg.Env != nil {
-		for _, key := range cfg.Env.Unset {
-			_ = os.Unsetenv(key)
-		}
+	if err := unsetListed(raw); err != nil {
+		writeDiagnostics(diagnostics, fmt.Errorf("decode: %w", err))
+		return nil, errUnreadable
 	}
+
+	cfg, err := ParseConfig([]byte(raw))
 	if err != nil {
 		writeDiagnostics(diagnostics, err)
 		return nil, errStartup
 	}
 	return cfg, nil
+}
+
+// unsetListed walks the top-level object and unsets env.unset as soon as it is
+// read. It stops at the first malformed token; keys read before it stay unset.
+func unsetListed(raw string) error {
+	dec := json.NewDecoder(strings.NewReader(raw))
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	if delim, ok := tok.(json.Delim); !ok || delim != '{' {
+		return errors.New("the configuration is not a JSON object")
+	}
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		if keyTok != "env" {
+			var skip json.RawMessage
+			if err := dec.Decode(&skip); err != nil {
+				return err
+			}
+			continue
+		}
+		var env struct {
+			Unset []string `json:"unset"`
+		}
+		if err := dec.Decode(&env); err != nil {
+			return err
+		}
+		for _, key := range env.Unset {
+			_ = os.Unsetenv(key)
+		}
+	}
+	_, err = dec.Token() // the closing brace; an error here means a truncated document
+	return err
 }
 
 func writeDiagnostics(path string, cause error) {
@@ -224,7 +282,7 @@ func writeDiagnostics(path string, cause error) {
 
 // ParseConfig decodes and validates a configuration document. Unknown fields
 // are rejected so a typo fails fast instead of silently disabling a step. On a
-// validation error the decoded config is still returned, so env.unset applies.
+// validation error the decoded config is returned alongside the error.
 func ParseConfig(raw []byte) (*Config, error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()

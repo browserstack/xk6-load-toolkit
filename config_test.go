@@ -2,10 +2,14 @@ package loadtoolkit
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"go.k6.io/k6/v2/errext/exitcodes"
 )
 
 func validConfigJSON(t *testing.T, mutate func(map[string]any)) []byte {
@@ -188,5 +192,63 @@ func TestNewSink_ConfigErrorAndAbsentSink(t *testing.T) {
 	}
 	if _, ok := o.(noopSink); !ok {
 		t.Fatalf("absent sink section gave %T, want noopSink", o)
+	}
+}
+
+// env.unset is applied even when strict decoding rejects the document.
+func TestLoadFromEnv_UnsetsListedKeysWhenStrictDecodeFails(t *testing.T) {
+	cases := map[string]struct {
+		raw     string
+		wantErr error
+	}{
+		"unknown field":          {`{"version":1,"env":{"unset":["TOOLKIT_TEST_SECRET"]},"sinks":{}}`, errStartup},
+		"trailing data":          {`{"version":1,"env":{"unset":["TOOLKIT_TEST_SECRET"]}} {"x":1}`, errStartup},
+		"truncated document":     {`{"version":1,"env":{"unset":["TOOLKIT_TEST_SECRET"]},"sink":`, errUnreadable},
+		"syntax error after env": {`{"version":1,"env":{"unset":["TOOLKIT_TEST_SECRET"]},"sink":{,}}`, errUnreadable},
+		"unknown field in env":   {`{"version":1,"env":{"unset":["TOOLKIT_TEST_SECRET"],"extra":true}}`, errStartup},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("TOOLKIT_TEST_SECRET", "s")
+			t.Setenv(ConfigEnv, tc.raw)
+			cfg, err := loadFromEnv()
+			if cfg != nil || err != tc.wantErr {
+				t.Fatalf("cfg=%v err=%v, want %v", cfg, err, tc.wantErr)
+			}
+			if !errors.Is(err, errStartup) || err.Error() != errStartup.Error() {
+				t.Fatalf("error %q must carry only the fixed startup message", err)
+			}
+			if _, ok := os.LookupEnv("TOOLKIT_TEST_SECRET"); ok {
+				t.Fatal("a listed key is still set after a rejected document")
+			}
+		})
+	}
+}
+
+// A document that is not a readable JSON object is fatal: init() exits before
+// k6 runs script code, so nothing listed can leak.
+func TestLoadFromEnv_UnreadableDocument(t *testing.T) {
+	for _, raw := range []string{`{`, `not json`, `["env"]`, `{"env":{"unset":"K"}}`} {
+		t.Setenv(ConfigEnv, raw)
+		if _, err := loadFromEnv(); err != errUnreadable {
+			t.Fatalf("%q: err=%v, want errUnreadable", raw, err)
+		}
+	}
+}
+
+// init() exits with k6's invalid-config code on an unreadable document.
+func TestInit_ExitsOnUnreadableDocument(t *testing.T) {
+	if os.Getenv("TOOLKIT_INIT_CHILD") == "1" {
+		return // reached only if init() did not exit
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestInit_ExitsOnUnreadableDocument$")
+	cmd.Env = append(os.Environ(), "TOOLKIT_INIT_CHILD=1", ConfigEnv+"={not json")
+	out, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != int(exitcodes.InvalidConfig) {
+		t.Fatalf("child err=%v, want exit %d; output:\n%s", err, exitcodes.InvalidConfig, out)
+	}
+	if !strings.Contains(string(out), errStartup.Error()) || strings.Contains(string(out), "not json") {
+		t.Fatalf("child output must be the fixed message only:\n%s", out)
 	}
 }

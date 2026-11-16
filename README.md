@@ -31,6 +31,11 @@ variable does not scrub the process's initial environment block (on Linux,
   configuration detail. If `XK6_LOAD_TOOLKIT_DIAGNOSTICS` names a file, the
   reason (with the failing path, e.g. `sink.columns[3].from[0]`) is written there.
 - Unknown fields are rejected, so a typo fails fast.
+- The variables in `env.unset` are removed even when the document is rejected:
+  a lenient pass reads only that list first. If the document is not readable
+  JSON at all, k6 exits at process start (exit code 104) before any script code
+  runs. Whatever produces the variable must emit valid JSON, with `env` before the
+  other sections so the list is read even if a later field is malformed.
 
 ```json
 {
