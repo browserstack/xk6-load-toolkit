@@ -252,3 +252,33 @@ func TestInit_ExitsOnUnreadableDocument(t *testing.T) {
 		t.Fatalf("child output must be the fixed message only:\n%s", out)
 	}
 }
+
+// encoding/json matches field names case-insensitively; the lenient pass must
+// not read a list the strict pass would read differently.
+func TestLoadFromEnv_CaseVariantsAndDuplicates(t *testing.T) {
+	cases := map[string]struct {
+		raw     string
+		wantErr error
+	}{
+		"ENV":                    {`{"version":1,"ENV":{"unset":["TOOLKIT_TEST_SECRET"]}}`, errUnreadable},
+		"Env":                    {`{"version":1,"Env":{"unset":["TOOLKIT_TEST_SECRET"]}}`, errUnreadable},
+		"UNSET":                  {`{"version":1,"env":{"UNSET":["TOOLKIT_TEST_SECRET"]}}`, errUnreadable},
+		"duplicate, first lists": {`{"version":1,"env":{"unset":["TOOLKIT_TEST_SECRET"]},"env":{"unset":[]}}`, nil},
+		"duplicate, last lists":  {`{"version":1,"env":{"unset":[]},"env":{"unset":["TOOLKIT_TEST_SECRET"]}}`, nil},
+		"duplicate, Env last":    {`{"version":1,"env":{"unset":[]},"Env":{"unset":["TOOLKIT_TEST_SECRET"]}}`, errUnreadable},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("TOOLKIT_TEST_SECRET", "s")
+			t.Setenv(ConfigEnv, tc.raw)
+			_, err := loadFromEnv()
+			if err != tc.wantErr {
+				t.Fatalf("err=%v, want %v", err, tc.wantErr)
+			}
+			// Whether the run continues or init() aborts, the key is gone.
+			if _, ok := os.LookupEnv("TOOLKIT_TEST_SECRET"); ok {
+				t.Fatal("a listed key is still set")
+			}
+		})
+	}
+}

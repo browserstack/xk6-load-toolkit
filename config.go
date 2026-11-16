@@ -229,6 +229,9 @@ func loadFromEnv() (*Config, error) {
 	}
 
 	cfg, err := ParseConfig([]byte(raw))
+	if cfg != nil && cfg.Env != nil {
+		unsetAll(cfg.Env.Unset) // backstop: the list as the strict pass read it
+	}
 	if err != nil {
 		writeDiagnostics(diagnostics, err)
 		return nil, errStartup
@@ -238,6 +241,10 @@ func loadFromEnv() (*Config, error) {
 
 // unsetListed walks the top-level object and unsets env.unset as soon as it is
 // read. It stops at the first malformed token; keys read before it stay unset.
+// encoding/json matches field names case-insensitively and keeps the last of
+// duplicate keys, so this pass unsets the list under every "env"/"unset" key in
+// any case, then rejects a key that is not spelled exactly, so the strict pass
+// never reads a list this one did not.
 func unsetListed(raw string) error {
 	dec := json.NewDecoder(strings.NewReader(raw))
 	tok, err := dec.Token()
@@ -247,30 +254,51 @@ func unsetListed(raw string) error {
 	if delim, ok := tok.(json.Delim); !ok || delim != '{' {
 		return errors.New("the configuration is not a JSON object")
 	}
+	var casing error
 	for dec.More() {
 		keyTok, err := dec.Token()
 		if err != nil {
 			return err
 		}
-		if keyTok != "env" {
+		key, _ := keyTok.(string)
+		if !strings.EqualFold(key, "env") {
 			var skip json.RawMessage
 			if err := dec.Decode(&skip); err != nil {
 				return err
 			}
 			continue
 		}
-		var env struct {
-			Unset []string `json:"unset"`
+		if key != "env" {
+			casing = fmt.Errorf("key %q must be spelled \"env\"", key)
 		}
+		var env map[string]json.RawMessage
 		if err := dec.Decode(&env); err != nil {
 			return err
 		}
-		for _, key := range env.Unset {
-			_ = os.Unsetenv(key)
+		for name, value := range env {
+			if !strings.EqualFold(name, "unset") {
+				continue
+			}
+			if name != "unset" {
+				casing = fmt.Errorf("key %q must be spelled \"unset\"", name)
+			}
+			var keys []string
+			if err := json.Unmarshal(value, &keys); err != nil {
+				return err
+			}
+			unsetAll(keys)
 		}
 	}
-	_, err = dec.Token() // the closing brace; an error here means a truncated document
-	return err
+	if _, err := dec.Token(); err != nil { // the closing brace; an error means a truncated document
+		return err
+	}
+	return casing
+}
+
+func unsetAll(keys []string) {
+	for _, key := range keys {
+		_ = os.Unsetenv(key)
+	}
 }
 
 func writeDiagnostics(path string, cause error) {
