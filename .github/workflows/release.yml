@@ -11,7 +11,13 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: "1.26.0"
+  # Exactly the Go in the pinned golang image that from-source builds of this
+  # extension use (golang:1.26-bookworm@sha256:9fdc884a..., GOLANG_VERSION), so a
+  # release binary and a source-built one compile with the same toolchain. Bump
+  # both together. GOTOOLCHAIN=local, as in that image: never let go.mod pull in
+  # a different toolchain.
+  GO_VERSION: "1.26.8"
+  GOTOOLCHAIN: local
   XK6_VERSION: "v1.4.12"
 
 jobs:
