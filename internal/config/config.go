@@ -15,7 +15,7 @@ import (
 	"go.k6.io/k6/v2/errext/exitcodes"
 
 	"github.com/browserstack/xk6-load-toolkit/internal/sink"
-	"github.com/browserstack/xk6-load-toolkit/internal/tagfilter"
+	tagfilter "github.com/browserstack/xk6-load-toolkit/internal/tag-filter"
 	"github.com/browserstack/xk6-load-toolkit/internal/throughput"
 )
 

@@ -197,14 +197,16 @@ scripts/release-gate.sh --binary k6-linux-amd64 --arch amd64 --manifest extensio
 ## Package layout
 
 ```
-register.go            init(): registers the output and the two JS modules with k6
-loadtoolkit.go         package doc and the public API (ParseConfig, NewSink, ConfigEnv, ...)
+register.go            the only root file: init() registers the output and the two JS
+                       modules with k6; the package exports nothing
 internal/config/       reads the document at init, applies env.unset, strict decode,
                        composes the capability sections and validates each one
 internal/sink/         the output: buffers, columns, cardinality guard, markers
 internal/throughput/   the limiter, the schedule and their JS module; testdata/ holds
                        the schedule fixtures and their generator
-internal/tagfilter/    the tag filter, its JS module and the check-sample policy
+internal/tag-filter/   the tag filter, its JS module and the check-sample policy
+                       (package tagfilter: Go package names cannot contain '-',
+                       so importers use `tagfilter "…/internal/tag-filter"`)
 internal/testutil/     fixtures shared by more than one package's tests
 ```
 
@@ -216,7 +218,8 @@ interface; the root package hands it over.
 
 ### Adding a capability
 
-1. Add `internal/<name>/` with its own `Config` type (with JSON tags), a
+1. Add `internal/<name>/` (a hyphenated directory is fine; the package name
+   inside is the same name without hyphens) with its own `Config` type (with JSON tags), a
    `Validate() error` method that returns errors prefixed with the section name,
    the code, and its tests (fixtures in `internal/<name>/testdata/`).
 2. Add one field for the section to `Config` in `internal/config/config.go`, and

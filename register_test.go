@@ -8,6 +8,8 @@ import (
 	"go.k6.io/k6/v2/lib"
 	"go.k6.io/k6/v2/metrics"
 	"go.k6.io/k6/v2/output"
+
+	"github.com/browserstack/xk6-load-toolkit/internal/config"
 )
 
 func outputParams() output.Params {
@@ -23,7 +25,7 @@ func TestNewSink_ConfigErrorAndAbsentSink(t *testing.T) {
 		t.Fatalf("err = %v, want errStartup", err)
 	}
 
-	o, err := newSink(&Config{Version: SchemaVersion}, nil, outputParams())
+	o, err := newSink(&config.Config{Version: config.SchemaVersion}, nil, outputParams())
 	if err != nil {
 		t.Fatal(err)
 	}
