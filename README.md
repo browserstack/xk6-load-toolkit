@@ -175,20 +175,15 @@ scripts/release-gate.sh --binary dist/k6-linux-amd64 --arch amd64
 version (not replaced) and this module, and links no other xk6 module than the
 ones k6 itself requires.
 
-## Releases
+## Distribution
 
-Pushing a `v*` tag runs `.github/workflows/release.yml`: tests and the denylist,
-then a linux/amd64 and a linux/arm64 build, the release gate on each binary, and
-only then a GitHub Release with `k6-linux-amd64`, `k6-linux-arm64`, `SHA256SUMS`,
-`extensions.json`, `LICENSE` and `NOTICE`. The release notes record the k6, xk6
-and Go versions and link the tag's source.
-
-To verify a download:
+This repository publishes no binaries. A consumer builds k6 from a branch or tag
+of this repository with `build.sh` and runs `scripts/release-gate.sh` on each
+binary before using it. To inspect a built binary:
 
 ```sh
-sha256sum -c --ignore-missing SHA256SUMS
-go version -m k6-linux-amd64          # module list and versions
-scripts/release-gate.sh --binary k6-linux-amd64 --arch amd64 --manifest extensions.json
+go version -m dist/k6-linux-amd64     # module list and versions
+scripts/release-gate.sh --binary dist/k6-linux-amd64 --arch amd64 --manifest extensions.json
 ```
 
 `scripts/toolkit-tree-hash.sh <dir>` prints a hash of the compiled files
