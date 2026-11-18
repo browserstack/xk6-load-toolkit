@@ -129,6 +129,15 @@ func (l *SlidingWindowLimiter) AcquireN(ctx context.Context, n int) error {
 	return nil
 }
 
+// AcquireUpTo is AcquireN capped at the rate, returning the grants taken.
+func (l *SlidingWindowLimiter) AcquireUpTo(ctx context.Context, n int) (int, error) {
+	g := min(n, l.limit)
+	return g, l.AcquireN(ctx, g)
+}
+
+// Scheduled is false: this is the flat window.
+func (l *SlidingWindowLimiter) Scheduled() bool { return false }
+
 // tryGrantN records n grants at one instant and returns 0, or returns how long
 // the caller must wait before retrying. The sleep deliberately happens in
 // AcquireN, outside the lock, so a waiting caller does not block the others.

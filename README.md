@@ -54,9 +54,26 @@ variable does not scrub the process's initial environment block (on Linux,
 | `podRps` | grants per rolling second for this process, `>= 1`; fractions truncate |
 | `traceFile` | optional: periodically write every grant's timestamp (ns) here |
 | `traceCap` | optional: maximum grants traced (default 500000) |
+| `schedule` | instead of `podRps`: a time-varying ceiling (below) |
 
-The JS module exports `_enabled()`, `_rate()`, `_acquire()`, `_acquireN(n)` and
-`_dumpTrace()`. One sliding window is shared by every VU in the process.
+The JS module exports `_enabled()`, `_rate()`, `_acquire()`, `_acquireN(n)`,
+`_acquireUpTo(n)`, `_scheduled()` and `_dumpTrace()`. One limiter is shared by
+every VU in the process. `_enabled()` throws on an invalid section, so a
+misconfigured run fails instead of running unthrottled.
+
+`schedule` follows a piecewise-linear rate: for every t, grants in (t-1s, t]
+never exceed floor(W(t)), the integral of the rate over that second.
+
+| Key | Meaning |
+|---|---|
+| `stages` | JSON string: 1..30 segments `{fromRps, toRps, durationSec}`, at most 4096 bytes; integer rps >= 0, durationSec 1..86400, each segment starting where the last ended, total <= 86400s, peak >= 1 |
+| `durationSec`, `peakRps` | strings that must equal the stages' total and peak |
+| `t0Ms` | string, the schedule start in Unix ms (shared by every process of a run); must be at most 60s ahead and not past the end |
+| `warmupSec` | number; excluded from the per-stage delivery log lines only |
+
+Setting `schedule` together with `podRps` is an error. `_acquireUpTo(n)` takes
+1..n grants at one instant and returns how many, so a batch can be sent in
+slices that each fit the ceiling.
 
 ### `tagFilter`
 

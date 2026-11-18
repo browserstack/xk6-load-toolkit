@@ -48,9 +48,26 @@ type EnvConfig struct {
 
 // ThroughputConfig configures the request-rate limiter module.
 type ThroughputConfig struct {
-	PodRPS    float64 `json:"podRps"`
-	TraceFile string  `json:"traceFile"`
-	TraceCap  int     `json:"traceCap"`
+	PodRPS    float64         `json:"podRps"`
+	Schedule  *ScheduleConfig `json:"schedule"`
+	TraceFile string          `json:"traceFile"`
+	TraceCap  int             `json:"traceCap"`
+}
+
+// ScheduleConfig selects the time-varying limiter instead of podRps. Stages,
+// DurationSec, PeakRps and T0Ms are carried as the producer received them and
+// are checked when the limiter is built (modules.go), so a bad value fails the
+// run through the module rather than a guessed default.
+type ScheduleConfig struct {
+	// Stages is a JSON array of {fromRps, toRps, durationSec} segments.
+	Stages string `json:"stages"`
+	// DurationSec and PeakRps must equal the stages' total and peak.
+	DurationSec string `json:"durationSec"`
+	PeakRps     string `json:"peakRps"`
+	// T0Ms is the schedule start in Unix milliseconds, shared by every process of a run.
+	T0Ms string `json:"t0Ms"`
+	// WarmupSec is excluded from the per-stage delivery log lines only.
+	WarmupSec float64 `json:"warmupSec"`
 }
 
 // TagFilterConfig holds the raw include/exclude rule strings,
@@ -331,7 +348,7 @@ func (c *Config) validate() error {
 		return fmt.Errorf("version: unsupported value %d (want %d)", c.Version, SchemaVersion)
 	}
 	if t := c.Throughput; t != nil {
-		if math.IsNaN(t.PodRPS) || math.IsInf(t.PodRPS, 0) || t.PodRPS < 1 {
+		if t.Schedule == nil && (math.IsNaN(t.PodRPS) || math.IsInf(t.PodRPS, 0) || t.PodRPS < 1) {
 			return fmt.Errorf("throughput.podRps: must be a number >= 1, got %v", t.PodRPS)
 		}
 		if t.TraceCap < 0 {
