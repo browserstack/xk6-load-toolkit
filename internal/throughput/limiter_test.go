@@ -1,4 +1,4 @@
-package loadtoolkit
+package throughput
 
 import (
 	"context"

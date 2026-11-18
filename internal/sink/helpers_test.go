@@ -1,11 +1,14 @@
-package loadtoolkit
+package sink
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	"go.k6.io/k6/v2/metrics"
+
+	"github.com/browserstack/xk6-load-toolkit/internal/testutil"
 )
 
 // testRow decodes a row rendered with testSinkConfig's columns.
@@ -43,51 +46,21 @@ const (
 	testBytesID       = "reqId"
 )
 
-func computedColumn(name string) ColumnSpec {
-	return ColumnSpec{Name: name, From: Sources{"computed:" + name}}
-}
-
 // testSinkConfig is a neutral sink configuration exposing every computed value.
-func testSinkConfig() *SinkConfig {
-	cols := []ColumnSpec{computedColumn("timestamp"), {Name: "job", From: Sources{"tag:job", "const:job"}}}
-	for _, name := range []string{"scenario", "status", "statusMessage", "url", "requestName", "group",
-		"vus", "bytesReceived", "bytesSent", "latency", "connect", "duration", "errorCount"} {
-		cols = append(cols, computedColumn(name))
+func testSinkConfig() *Config {
+	dec := json.NewDecoder(strings.NewReader(testutil.SinkConfigJSON))
+	dec.DisallowUnknownFields()
+	var cfg Config
+	if err := dec.Decode(&cfg); err != nil {
+		panic("testutil.SinkConfigJSON: " + err.Error())
 	}
-	cols = append(cols, ColumnSpec{Name: "instance", From: Sources{"tag:instance", "const:instance"}})
-	return &SinkConfig{
-		Transport: TransportConfig{Endpoint: "http://127.0.0.1:1", Table: "requests", AssertionTable: "checks"},
-		Constants: map[string]string{"job": "job-const", "instance": "main"},
-		Columns:   cols,
-		AssertionColumns: []ColumnSpec{
-			{Name: "name", From: Sources{"tag:check"}},
-			{Name: "label", From: Sources{"tag:name", "tag:url", "computed:parentLabel"}},
-			{Name: "scenario", From: Sources{"tag:group", "tag:scenario"}},
-			{Name: "status", From: Sources{"tag:status", "computed:parentStatus"}},
-			{Name: "failed", From: Sources{"computed:failed"}},
-			{Name: "job", From: Sources{"tag:job", "const:job"}},
-		},
-		Correlation: CorrelationConfig{
-			RequestMetrics:      []string{"http_reqs", "http_req_duration", "http_req_waiting", "http_req_blocked", "http_req_connecting", "http_req_tls_handshaking"},
-			URLMetaKey:          "fullUrl",
-			URLLegacyTag:        "legacyUrl",
-			BytesIDMetaKey:      testBytesID,
-			BytesSentMetric:     testBytesSent,
-			BytesReceivedMetric: testBytesReceived,
-			WSMetrics:           []string{"ws_connecting", "ws_sessions", "ws_session_duration", "ws_ping", "ws_connect_error"},
-			WSSummedMetrics:     []string{"ws_msgs_sent", "ws_msgs_received"},
-			WSErrorMetric:       "ws_connect_error",
-			WSErrorMetaKey:      "wsError",
-			CheckMetric:         "checks",
-		},
-		SendTimeRestamp: true,
-	}
+	return &cfg
 }
 
 func newTestBuffer(t *testing.T, maxEntries int) *metricBuffer {
 	t.Helper()
 	cfg := testSinkConfig()
-	if err := cfg.validate(); err != nil {
+	if err := cfg.Validate(); err != nil {
 		t.Fatalf("test config invalid: %v", err)
 	}
 	return newMetricBuffer(newRowEngine(cfg), maxEntries, time.Minute)

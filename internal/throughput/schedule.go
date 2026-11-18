@@ -1,4 +1,4 @@
-package loadtoolkit
+package throughput
 
 // Ramped throughput: a time-varying ceiling. The rate follows a piecewise-linear
 // schedule of per-process targets, and the contract is: for every t, requests
@@ -12,7 +12,7 @@ package loadtoolkit
 // identical to the exact rule wherever W is non-decreasing (holds, rising
 // ramps, flat) and only more conservative on falling segments.
 //
-// Flat throughput never builds this type — modules.go selects it only when the
+// Flat throughput never builds this type — module.go selects it only when the
 // throughput section carries a schedule — so SlidingWindowLimiter is untouched.
 
 import (

@@ -1,4 +1,4 @@
-package loadtoolkit
+package tagfilter
 
 import (
 	"reflect"
@@ -242,15 +242,15 @@ func TestParseFilter_MalformedJSONFailsOpen(t *testing.T) {
 }
 
 func TestFilterFromConfig_PrefersInclude(t *testing.T) {
-	f := FilterFromConfig(&TagFilterConfig{Include: `{"test":["smoke"]}`, Exclude: `{"test":["flaky"]}`})
+	f := FromConfig(&Config{Include: `{"test":["smoke"]}`, Exclude: `{"test":["flaky"]}`})
 	if f.Mode() != ModeInclude {
 		t.Fatalf("when both rules are set, include should win; got %v", f.Mode())
 	}
 }
 
 func TestFilterFromConfig_Absent(t *testing.T) {
-	for _, cfg := range []*TagFilterConfig{nil, {}, {Include: "  ", Exclude: ""}} {
-		if f := FilterFromConfig(cfg); f.Mode() != ModeNone {
+	for _, cfg := range []*Config{nil, {}, {Include: "  ", Exclude: ""}} {
+		if f := FromConfig(cfg); f.Mode() != ModeNone {
 			t.Fatalf("absent rules should be ModeNone, got %v", f.Mode())
 		}
 	}

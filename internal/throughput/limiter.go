@@ -1,4 +1,4 @@
-package loadtoolkit
+package throughput
 
 // The request-rate limiter: at most `rate` grants in any rolling one-second
 // window, never more. A sliding window was chosen over a token bucket and a

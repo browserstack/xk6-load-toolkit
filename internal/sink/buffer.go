@@ -1,4 +1,4 @@
-package loadtoolkit
+package sink
 
 import (
 	"fmt"
@@ -46,7 +46,7 @@ type rowEngine struct {
 // builtinTags are the tags the computed request values read.
 var builtinTags = []string{"scenario", "status", "url", "name", "method", "group", "vu"}
 
-func newRowEngine(cfg *SinkConfig) *rowEngine {
+func newRowEngine(cfg *Config) *rowEngine {
 	cols, _ := compileColumns(cfg.Columns, requestBuiltins, cfg.Constants, "sink.columns")
 	keepTags := toSet(append(builtinTags, cfg.Correlation.URLLegacyTag))
 	keepMeta := toSet([]string{cfg.Correlation.URLMetaKey})
@@ -412,7 +412,7 @@ type assertionBuffer struct {
 	rows    []row
 }
 
-func newAssertionBuffer(cfg *SinkConfig) *assertionBuffer {
+func newAssertionBuffer(cfg *Config) *assertionBuffer {
 	cols, _ := compileColumns(cfg.AssertionColumns, assertionBuiltins, cfg.Constants, "sink.assertionColumns")
 	maxRows := cfg.Buffers.AssertionMax
 	if maxRows <= 0 {

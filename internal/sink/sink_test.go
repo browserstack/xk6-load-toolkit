@@ -1,4 +1,4 @@
-package loadtoolkit
+package sink
 
 import (
 	"errors"
@@ -14,15 +14,11 @@ import (
 
 	"go.k6.io/k6/v2/errext"
 	"go.k6.io/k6/v2/errext/exitcodes"
-	"go.k6.io/k6/v2/lib"
 	"go.k6.io/k6/v2/metrics"
-	"go.k6.io/k6/v2/output"
-)
 
-func outputParams() output.Params {
-	tags := metrics.DefaultSystemTagSet
-	return output.Params{ScriptOptions: lib.Options{SystemTags: &tags}}
-}
+	"github.com/browserstack/xk6-load-toolkit/internal/tagfilter"
+	"github.com/browserstack/xk6-load-toolkit/internal/testutil"
+)
 
 // recorder is an endpoint that records each POST body and can fail on demand.
 type recorder struct {
@@ -69,7 +65,7 @@ func (r *recorder) posts(table string) int {
 	return len(r.bodies[table])
 }
 
-func testSink(t *testing.T, endpoint string, mutate func(*SinkConfig)) (*sink, string) {
+func testSink(t *testing.T, endpoint string, mutate func(*Config)) (*sink, string) {
 	t.Helper()
 	cfg := testSinkConfig()
 	cfg.Transport.Endpoint = endpoint
@@ -82,10 +78,10 @@ func testSink(t *testing.T, endpoint string, mutate func(*SinkConfig)) (*sink, s
 	if mutate != nil {
 		mutate(cfg)
 	}
-	if err := cfg.validate(); err != nil {
+	if err := cfg.Validate(); err != nil {
 		t.Fatalf("config: %v", err)
 	}
-	return newSink(cfg, nil, outputParams().ScriptOptions.SystemTags), dir
+	return newSink(cfg, nil), dir
 }
 
 func samples(s ...metrics.Sample) []metrics.SampleContainer {
@@ -171,7 +167,7 @@ func TestSink_InsertURL(t *testing.T) {
 func TestSink_ChunksAndFailsFast(t *testing.T) {
 	rec := newRecorder(t)
 	rec.fail = func(table string, n int) bool { return table == "requests" && n == 1 }
-	s, _ := testSink(t, rec.srv.URL, func(c *SinkConfig) { c.Transport.MaxInsertRows = 2 })
+	s, _ := testSink(t, rec.srv.URL, func(c *Config) { c.Transport.MaxInsertRows = 2 })
 
 	reg := metrics.NewRegistry()
 	for i := 0; i < 5; i++ {
@@ -230,7 +226,7 @@ func TestSink_FailedAssertionInsertIsRequeued(t *testing.T) {
 
 func TestSink_ChecksWithoutAssertionTableAreDropped(t *testing.T) {
 	rec := newRecorder(t)
-	s, _ := testSink(t, rec.srv.URL, func(c *SinkConfig) {
+	s, _ := testSink(t, rec.srv.URL, func(c *Config) {
 		c.Transport.AssertionTable = ""
 		c.AssertionColumns = nil
 	})
@@ -252,7 +248,7 @@ func TestSink_FilteredChecksAreDroppedBeforeMarkers(t *testing.T) {
 	cfg.CheckFilter = true
 	dir := t.TempDir()
 	cfg.Markers = &MarkersConfig{Dir: dir, ScriptData: "data", DataMetricPrefixes: []string{"http_req"}}
-	s := newSink(cfg, &TagFilterConfig{Include: `{"group":["Keep"]}`}, groupEnabled())
+	s := newSink(cfg, tagfilter.NewCheckFilter(&tagfilter.Config{Include: `{"group":["Keep"]}`}, testutil.GroupEnabled()))
 
 	reg := metrics.NewRegistry()
 	s.AddMetricSamples(samples(mkSample(reg, "checks", map[string]string{"check": "c", "group": "::Other"}, time.Unix(1700000000, 0), 1)))
@@ -266,7 +262,7 @@ func TestSink_FilteredChecksAreDroppedBeforeMarkers(t *testing.T) {
 }
 
 func TestSink_AbortsOnCardinality(t *testing.T) {
-	s, _ := testSink(t, "http://127.0.0.1:1", func(c *SinkConfig) {
+	s, _ := testSink(t, "http://127.0.0.1:1", func(c *Config) {
 		c.Cardinality = &CardinalityConfig{MaxTimeSeries: 20, Message: "too many: {count} > {limit}"}
 	})
 	var mu sync.Mutex
@@ -299,7 +295,7 @@ func TestSink_AbortsOnCardinality(t *testing.T) {
 }
 
 func TestSink_CardinalityCustomExitCode(t *testing.T) {
-	s, _ := testSink(t, "http://127.0.0.1:1", func(c *SinkConfig) {
+	s, _ := testSink(t, "http://127.0.0.1:1", func(c *Config) {
 		c.Cardinality = &CardinalityConfig{MaxTimeSeries: 1, ExitCode: 42}
 	})
 	var gotErr error
@@ -316,7 +312,7 @@ func TestSink_CardinalityCustomExitCode(t *testing.T) {
 
 func TestSink_NoAbortWhenGuardDisabledOrAbsent(t *testing.T) {
 	for _, card := range []*CardinalityConfig{nil, {MaxTimeSeries: 0}} {
-		s, _ := testSink(t, "http://127.0.0.1:1", func(c *SinkConfig) { c.Cardinality = card })
+		s, _ := testSink(t, "http://127.0.0.1:1", func(c *Config) { c.Cardinality = card })
 		called := false
 		s.SetTestRunStopCallback(func(error) { called = true })
 		reg := metrics.NewRegistry()
@@ -331,7 +327,7 @@ func TestSink_NoAbortWhenGuardDisabledOrAbsent(t *testing.T) {
 
 // Without a stop callback the guard logs and does not panic.
 func TestSink_AbortWithoutCallback(t *testing.T) {
-	s, _ := testSink(t, "http://127.0.0.1:1", func(c *SinkConfig) { c.Cardinality = &CardinalityConfig{MaxTimeSeries: 1} })
+	s, _ := testSink(t, "http://127.0.0.1:1", func(c *Config) { c.Cardinality = &CardinalityConfig{MaxTimeSeries: 1} })
 	reg := metrics.NewRegistry()
 	for i := 0; i < 3; i++ {
 		s.AddMetricSamples(samples(distinctSeriesSample(reg, i, time.Unix(1700000000, 0))))
@@ -340,7 +336,7 @@ func TestSink_AbortWithoutCallback(t *testing.T) {
 
 func TestSink_NoMarkersSection(t *testing.T) {
 	rec := newRecorder(t)
-	s, _ := testSink(t, rec.srv.URL, func(c *SinkConfig) { c.Markers = nil })
+	s, _ := testSink(t, rec.srv.URL, func(c *Config) { c.Markers = nil })
 	if err := s.Start(); err != nil {
 		t.Fatal(err)
 	}

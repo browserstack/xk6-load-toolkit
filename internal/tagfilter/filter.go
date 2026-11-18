@@ -1,4 +1,4 @@
-package loadtoolkit
+package tagfilter
 
 import (
 	"encoding/json"
@@ -38,9 +38,9 @@ type Filter struct {
 	group [][]string
 }
 
-// FilterFromConfig builds the filter from the tagFilter section. Absent or
+// FromConfig builds the filter from the tagFilter section. Absent or
 // empty rules give ModeNone; include wins when both are set.
-func FilterFromConfig(cfg *TagFilterConfig) *Filter {
+func FromConfig(cfg *Config) *Filter {
 	if cfg == nil {
 		return &Filter{mode: ModeNone}
 	}

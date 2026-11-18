@@ -1,8 +1,8 @@
-package loadtoolkit
+package tagfilter
 
 import "go.k6.io/k6/v2/metrics"
 
-// checkFilter drops check samples recorded against requests the tag filter
+// CheckFilter drops check samples recorded against requests the tag filter
 // skipped. A skipped request hands the script an inert response, and k6 records
 // the script's check against it as a real sample; without this, those checks
 // would be written as assertions for requests that never left the process.
@@ -14,22 +14,25 @@ import "go.k6.io/k6/v2/metrics"
 //     tell whether the request ran;
 //   - only when the `group` system tag is enabled. Without it every check looks
 //     ungrouped, and in include mode that would drop every real assertion.
-type checkFilter struct {
+type CheckFilter struct {
 	filter *Filter
 }
 
-func newCheckFilter(rules *TagFilterConfig, systemTags *metrics.SystemTagSet) *checkFilter {
+// NewCheckFilter builds the check-sample policy from the tagFilter section and
+// the run's enabled system tags.
+func NewCheckFilter(rules *Config, systemTags *metrics.SystemTagSet) *CheckFilter {
 	if systemTags == nil || !systemTags.Has(metrics.TagGroup) {
-		return &checkFilter{}
+		return &CheckFilter{}
 	}
-	f := FilterFromConfig(rules)
+	f := FromConfig(rules)
 	if f.mode == ModeNone || len(f.test) > 0 || len(f.scenario) > 0 || len(f.group) == 0 {
-		return &checkFilter{}
+		return &CheckFilter{}
 	}
-	return &checkFilter{filter: f}
+	return &CheckFilter{filter: f}
 }
 
-func (c *checkFilter) mode() string {
+// Mode is "inert", "include" or "exclude".
+func (c *CheckFilter) Mode() string {
 	if c == nil || c.filter == nil {
 		return "inert"
 	}
@@ -39,9 +42,9 @@ func (c *checkFilter) mode() string {
 	return "include"
 }
 
-// dropsCheck reports whether a check sample with this group path is fabricated.
+// DropsCheck reports whether a check sample with this group path is fabricated.
 // An absent group key says nothing about the request, so the sample is kept.
-func (c *checkFilter) dropsCheck(groupPath string, hasGroup bool) bool {
+func (c *CheckFilter) DropsCheck(groupPath string, hasGroup bool) bool {
 	if c == nil || c.filter == nil || !hasGroup {
 		return false
 	}

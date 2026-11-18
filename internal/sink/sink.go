@@ -1,4 +1,4 @@
-package loadtoolkit
+package sink
 
 import (
 	"errors"
@@ -20,8 +20,17 @@ import (
 	"go.k6.io/k6/v2/output"
 )
 
-// SinkName is the value passed to `k6 run --out`.
-const SinkName = "load-toolkit-sink"
+// Name is the value passed to `k6 run --out`.
+const Name = "load-toolkit-sink"
+
+// CheckFilter decides whether a check sample was recorded against a request the
+// tag filter skipped. The tagfilter package provides it; the sink only consumes it.
+type CheckFilter interface {
+	// Mode names the active policy for the startup log line.
+	Mode() string
+	// DropsCheck reports whether a check sample with this group path is fabricated.
+	DropsCheck(groupPath string, hasGroup bool) bool
+}
 
 var (
 	_ output.Output          = (*sink)(nil)
@@ -79,7 +88,7 @@ func (m *marker) clear() {
 }
 
 type sink struct {
-	cfg               *SinkConfig
+	cfg               *Config
 	insertEndpoint    string
 	assertionEndpoint string
 	flushInterval     time.Duration
@@ -107,31 +116,30 @@ type sink struct {
 	cardinality    *cardinalityGuard
 	stopTestRun    func(error)
 	abortOnce      sync.Once
-	checkFilter    *checkFilter
+	checkFilter    CheckFilter
 	cardinalityCfg CardinalityConfig
 }
 
 // noopSink accepts samples and writes nothing; used when the sink section is absent.
 type noopSink struct{}
 
-func (noopSink) Description() string                        { return SinkName + " (disabled)" }
+func (noopSink) Description() string                        { return Name + " (disabled)" }
 func (noopSink) Start() error                               { return nil }
 func (noopSink) Stop() error                                { return nil }
 func (noopSink) AddMetricSamples([]metrics.SampleContainer) {}
 
-// NewSink is the output constructor registered with k6.
-func NewSink(params output.Params) (output.Output, error) {
-	if configErr != nil {
-		return nil, configErr
-	}
-	if loadedConfig.Sink == nil {
+// New builds the output for a validated sink section. A nil section gives an
+// output that accepts samples and writes nothing. checks is consulted only when
+// the section sets checkFilter; nil there means an inert policy.
+func New(cfg *Config, checks CheckFilter) output.Output {
+	if cfg == nil {
 		logf("no sink configuration; no rows will be written")
-		return noopSink{}, nil
+		return noopSink{}
 	}
-	return newSink(loadedConfig.Sink, loadedConfig.TagFilter, params.ScriptOptions.SystemTags), nil
+	return newSink(cfg, checks)
 }
 
-func newSink(cfg *SinkConfig, tagRules *TagFilterConfig, systemTags *metrics.SystemTagSet) *sink {
+func newSink(cfg *Config, checks CheckFilter) *sink {
 	tr := cfg.Transport
 	engine := newRowEngine(cfg)
 	s := &sink{
@@ -187,11 +195,19 @@ func newSink(cfg *SinkConfig, tagRules *TagFilterConfig, systemTags *metrics.Sys
 	s.cardinality = newCardinalityGuard(s.cardinalityCfg.MaxTimeSeries)
 
 	if cfg.CheckFilter {
-		s.checkFilter = newCheckFilter(tagRules, systemTags)
+		s.checkFilter = checks
 		// A fully filtered run reports empty, so the resolved mode is logged.
-		logf("check-sample filter: mode=%s", s.checkFilter.mode())
+		logf("check-sample filter: mode=%s", checkFilterMode(checks))
 	}
 	return s
+}
+
+// checkFilterMode is the policy's mode, or "inert" when there is none.
+func checkFilterMode(c CheckFilter) string {
+	if c == nil {
+		return "inert"
+	}
+	return c.Mode()
 }
 
 // insertURL builds a ClickHouse HTTP-interface insert URL.
@@ -303,7 +319,7 @@ func (s *sink) AddMetricSamples(sampleContainers []metrics.SampleContainer) {
 
 			// A check recorded against a request the tag filter skipped must not
 			// reach the markers or the assertion rows.
-			if metricName == checkMetric && s.checkFilter.dropsCheck(groupTag, hasGroupTag) {
+			if metricName == checkMetric && s.checkFilter != nil && s.checkFilter.DropsCheck(groupTag, hasGroupTag) {
 				continue
 			}
 

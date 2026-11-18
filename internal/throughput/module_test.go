@@ -1,4 +1,4 @@
-package loadtoolkit
+package throughput
 
 import (
 	"context"
@@ -15,7 +15,7 @@ func TestLimiterFromConfig(t *testing.T) {
 		t.Fatalf("absent section: l=%v err=%v", l, err)
 	}
 	for raw, want := range map[float64]int{50: 50, 1: 1, 1.9: 1} {
-		l, err := limiterFromConfig(&ThroughputConfig{PodRPS: raw})
+		l, err := limiterFromConfig(&Config{PodRPS: raw})
 		if err != nil || l.Rate() != want || l.Scheduled() {
 			t.Fatalf("podRps %v: l=%v err=%v, want flat rate %d", raw, l, err, want)
 		}
@@ -23,7 +23,7 @@ func TestLimiterFromConfig(t *testing.T) {
 			t.Fatal("traceCap default not applied")
 		}
 	}
-	l, err := limiterFromConfig(&ThroughputConfig{PodRPS: 5, TraceCap: 7})
+	l, err := limiterFromConfig(&Config{PodRPS: 5, TraceCap: 7})
 	if err != nil || l.(*SlidingWindowLimiter).traceCap != 7 {
 		t.Fatalf("traceCap override: %v %v", l, err)
 	}
@@ -47,44 +47,44 @@ func TestScheduleFromConfig(t *testing.T) {
 	}
 	cases := []struct {
 		name    string
-		cfg     *ThroughputConfig
+		cfg     *Config
 		wantErr string
 	}{
-		{name: "valid schedule", cfg: &ThroughputConfig{Schedule: with(func(*ScheduleConfig) {})}},
-		{name: "t0 slightly in the future is fine", cfg: &ThroughputConfig{Schedule: with(func(c *ScheduleConfig) { c.T0Ms = ms(30 * time.Second) })}},
-		{name: "schedule without stages", cfg: &ThroughputConfig{Schedule: with(func(c *ScheduleConfig) { c.Stages = "" })}, wantErr: "requires stages"},
-		{name: "schedule and podRps together", cfg: &ThroughputConfig{PodRPS: 50, Schedule: with(func(*ScheduleConfig) {})}, wantErr: "podRps"},
-		{name: "malformed json", cfg: &ThroughputConfig{Schedule: with(func(c *ScheduleConfig) { c.Stages = `[{"fromRps":0,` })}, wantErr: "JSON"},
-		{name: "fractional value", cfg: &ThroughputConfig{Schedule: with(func(c *ScheduleConfig) {
+		{name: "valid schedule", cfg: &Config{Schedule: with(func(*ScheduleConfig) {})}},
+		{name: "t0 slightly in the future is fine", cfg: &Config{Schedule: with(func(c *ScheduleConfig) { c.T0Ms = ms(30 * time.Second) })}},
+		{name: "schedule without stages", cfg: &Config{Schedule: with(func(c *ScheduleConfig) { c.Stages = "" })}, wantErr: "requires stages"},
+		{name: "schedule and podRps together", cfg: &Config{PodRPS: 50, Schedule: with(func(*ScheduleConfig) {})}, wantErr: "podRps"},
+		{name: "malformed json", cfg: &Config{Schedule: with(func(c *ScheduleConfig) { c.Stages = `[{"fromRps":0,` })}, wantErr: "JSON"},
+		{name: "fractional value", cfg: &Config{Schedule: with(func(c *ScheduleConfig) {
 			c.Stages, c.PeakRps = `[{"fromRps":0,"toRps":1.5,"durationSec":180}]`, "1"
 		})}, wantErr: "JSON"},
-		{name: "unknown key", cfg: &ThroughputConfig{Schedule: with(func(c *ScheduleConfig) { c.Stages = `[{"fromRps":0,"toRps":50,"durationSec":180,"x":1}]` })}, wantErr: "JSON"},
-		{name: "empty array", cfg: &ThroughputConfig{Schedule: with(func(c *ScheduleConfig) { c.Stages = `[]` })}, wantErr: "1..30"},
-		{name: "31 segments", cfg: &ThroughputConfig{Schedule: with(func(c *ScheduleConfig) {
+		{name: "unknown key", cfg: &Config{Schedule: with(func(c *ScheduleConfig) { c.Stages = `[{"fromRps":0,"toRps":50,"durationSec":180,"x":1}]` })}, wantErr: "JSON"},
+		{name: "empty array", cfg: &Config{Schedule: with(func(c *ScheduleConfig) { c.Stages = `[]` })}, wantErr: "1..30"},
+		{name: "31 segments", cfg: &Config{Schedule: with(func(c *ScheduleConfig) {
 			c.Stages = "[" + strings.TrimSuffix(strings.Repeat(`{"fromRps":1,"toRps":1,"durationSec":1},`, 31), ",") + "]"
 		})}, wantErr: "1..30"},
-		{name: "negative rps", cfg: &ThroughputConfig{Schedule: with(func(c *ScheduleConfig) { c.Stages = `[{"fromRps":-1,"toRps":50,"durationSec":180}]` })}, wantErr: ">= 0"},
-		{name: "segment over the 24h bound", cfg: &ThroughputConfig{Schedule: with(func(c *ScheduleConfig) {
+		{name: "negative rps", cfg: &Config{Schedule: with(func(c *ScheduleConfig) { c.Stages = `[{"fromRps":-1,"toRps":50,"durationSec":180}]` })}, wantErr: ">= 0"},
+		{name: "segment over the 24h bound", cfg: &Config{Schedule: with(func(c *ScheduleConfig) {
 			c.Stages, c.DurationSec = `[{"fromRps":0,"toRps":50,"durationSec":86401}]`, "86401"
 		})}, wantErr: "durationSec must be 1.."},
-		{name: "total over the 24h bound", cfg: &ThroughputConfig{Schedule: with(func(c *ScheduleConfig) {
+		{name: "total over the 24h bound", cfg: &Config{Schedule: with(func(c *ScheduleConfig) {
 			c.Stages, c.DurationSec = `[{"fromRps":0,"toRps":50,"durationSec":86400},{"fromRps":50,"toRps":50,"durationSec":1}]`, "86401"
 		})}, wantErr: "exceeds"},
-		{name: "zero duration", cfg: &ThroughputConfig{Schedule: with(func(c *ScheduleConfig) {
+		{name: "zero duration", cfg: &Config{Schedule: with(func(c *ScheduleConfig) {
 			c.Stages = `[{"fromRps":0,"toRps":50,"durationSec":0},{"fromRps":50,"toRps":50,"durationSec":180}]`
 		})}, wantErr: "durationSec"},
-		{name: "discontinuous", cfg: &ThroughputConfig{Schedule: with(func(c *ScheduleConfig) {
+		{name: "discontinuous", cfg: &Config{Schedule: with(func(c *ScheduleConfig) {
 			c.Stages = `[{"fromRps":0,"toRps":50,"durationSec":60},{"fromRps":40,"toRps":50,"durationSec":120}]`
 		})}, wantErr: "continuous"},
-		{name: "duration mismatch", cfg: &ThroughputConfig{Schedule: with(func(c *ScheduleConfig) { c.DurationSec = "181" })}, wantErr: "durationSec="},
-		{name: "duration not an integer", cfg: &ThroughputConfig{Schedule: with(func(c *ScheduleConfig) { c.DurationSec = "180.0" })}, wantErr: "durationSec="},
-		{name: "peak mismatch", cfg: &ThroughputConfig{Schedule: with(func(c *ScheduleConfig) { c.PeakRps = "49" })}, wantErr: "peakRps="},
-		{name: "oversize", cfg: &ThroughputConfig{Schedule: with(func(c *ScheduleConfig) { c.Stages = "[" + strings.Repeat(" ", 4096) + "]" })}, wantErr: "4096"},
-		{name: "t0 missing", cfg: &ThroughputConfig{Schedule: with(func(c *ScheduleConfig) { c.T0Ms = "" })}, wantErr: "t0Ms"},
-		{name: "t0 not a number", cfg: &ThroughputConfig{Schedule: with(func(c *ScheduleConfig) { c.T0Ms = "soon" })}, wantErr: "t0Ms"},
-		{name: "t0 older than the schedule", cfg: &ThroughputConfig{Schedule: with(func(c *ScheduleConfig) { c.T0Ms = ms(-181 * time.Second) })}, wantErr: "t0Ms"},
-		{name: "t0 over 60s ahead", cfg: &ThroughputConfig{Schedule: with(func(c *ScheduleConfig) { c.T0Ms = ms(61 * time.Second) })}, wantErr: "t0Ms"},
-		{name: "all-zero schedule", cfg: &ThroughputConfig{Schedule: with(func(c *ScheduleConfig) {
+		{name: "duration mismatch", cfg: &Config{Schedule: with(func(c *ScheduleConfig) { c.DurationSec = "181" })}, wantErr: "durationSec="},
+		{name: "duration not an integer", cfg: &Config{Schedule: with(func(c *ScheduleConfig) { c.DurationSec = "180.0" })}, wantErr: "durationSec="},
+		{name: "peak mismatch", cfg: &Config{Schedule: with(func(c *ScheduleConfig) { c.PeakRps = "49" })}, wantErr: "peakRps="},
+		{name: "oversize", cfg: &Config{Schedule: with(func(c *ScheduleConfig) { c.Stages = "[" + strings.Repeat(" ", 4096) + "]" })}, wantErr: "4096"},
+		{name: "t0 missing", cfg: &Config{Schedule: with(func(c *ScheduleConfig) { c.T0Ms = "" })}, wantErr: "t0Ms"},
+		{name: "t0 not a number", cfg: &Config{Schedule: with(func(c *ScheduleConfig) { c.T0Ms = "soon" })}, wantErr: "t0Ms"},
+		{name: "t0 older than the schedule", cfg: &Config{Schedule: with(func(c *ScheduleConfig) { c.T0Ms = ms(-181 * time.Second) })}, wantErr: "t0Ms"},
+		{name: "t0 over 60s ahead", cfg: &Config{Schedule: with(func(c *ScheduleConfig) { c.T0Ms = ms(61 * time.Second) })}, wantErr: "t0Ms"},
+		{name: "all-zero schedule", cfg: &Config{Schedule: with(func(c *ScheduleConfig) {
 			c.Stages, c.PeakRps = `[{"fromRps":0,"toRps":0,"durationSec":180}]`, "0"
 		})}, wantErr: "peak"},
 	}
@@ -129,7 +129,7 @@ func TestScheduleWarmup(t *testing.T) {
 // The flat path never yields a schedule limiter, and AcquireUpTo on it is
 // AcquireN capped at the rate.
 func TestFlatLimiterInterface(t *testing.T) {
-	l, err := limiterFromConfig(&ThroughputConfig{PodRPS: 3})
+	l, err := limiterFromConfig(&Config{PodRPS: 3})
 	if err != nil || l == nil || l.Scheduled() {
 		t.Fatalf("flat: l=%v err=%v", l, err)
 	}
@@ -162,19 +162,5 @@ func TestWriteTraceHeader(t *testing.T) {
 	fl, _ := NewSlidingWindowLimiter(1)
 	if traceHeader(fl) != "" {
 		t.Fatal("flat limiter must have no trace header")
-	}
-}
-
-// The schedule section is part of the strict configuration schema.
-func TestParseConfig_ScheduleSection(t *testing.T) {
-	cfg, err := ParseConfig([]byte(`{"version":1,"throughput":{"schedule":{"stages":"[]","durationSec":"1","peakRps":"1","t0Ms":"1","warmupSec":2}}}`))
-	if err != nil || cfg.Throughput.Schedule == nil || cfg.Throughput.Schedule.WarmupSec != 2 {
-		t.Fatalf("cfg=%+v err=%v", cfg, err)
-	}
-	if _, err := ParseConfig([]byte(`{"version":1,"throughput":{"schedule":{"stage":"[]"}}}`)); err == nil {
-		t.Fatal("an unknown schedule field must be rejected")
-	}
-	if _, err := ParseConfig([]byte(`{"version":1,"throughput":{"podRps":0}}`)); err == nil {
-		t.Fatal("a flat section still needs podRps >= 1")
 	}
 }

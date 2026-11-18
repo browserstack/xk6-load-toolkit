@@ -1,4 +1,4 @@
-package loadtoolkit
+package sink
 
 import (
 	"sync"

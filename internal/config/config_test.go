@@ -1,4 +1,4 @@
-package loadtoolkit
+package config
 
 import (
 	"encoding/json"
@@ -10,11 +10,18 @@ import (
 	"testing"
 
 	"go.k6.io/k6/v2/errext/exitcodes"
+
+	"github.com/browserstack/xk6-load-toolkit/internal/sink"
+	"github.com/browserstack/xk6-load-toolkit/internal/testutil"
 )
 
 func validConfigJSON(t *testing.T, mutate func(map[string]any)) []byte {
 	t.Helper()
-	raw, err := json.Marshal(Config{Version: SchemaVersion, Sink: testSinkConfig()})
+	var sc sink.Config
+	if err := json.Unmarshal([]byte(testutil.SinkConfigJSON), &sc); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(Config{Version: SchemaVersion, Sink: &sc})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +45,7 @@ func validConfigJSON(t *testing.T, mutate func(map[string]any)) []byte {
 func sinkOf(doc map[string]any) map[string]any { return doc["sink"].(map[string]any) }
 
 func TestParseConfig_Valid(t *testing.T) {
-	cfg, err := ParseConfig(validConfigJSON(t, nil))
+	cfg, err := Parse(validConfigJSON(t, nil))
 	if err != nil {
 		t.Fatalf("ParseConfig: %v", err)
 	}
@@ -48,7 +55,7 @@ func TestParseConfig_Valid(t *testing.T) {
 }
 
 func TestParseConfig_Minimal(t *testing.T) {
-	cfg, err := ParseConfig([]byte(`{"version":1}`))
+	cfg, err := Parse([]byte(`{"version":1}`))
 	if err != nil || cfg.Sink != nil || cfg.Throughput != nil {
 		t.Fatalf("cfg=%+v err=%v", cfg, err)
 	}
@@ -101,24 +108,11 @@ func TestParseConfig_Rejects(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := ParseConfig(tc.raw)
+			_, err := Parse(tc.raw)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want it to mention %q", err, tc.want)
 			}
 		})
-	}
-}
-
-func TestSources_StringOrArray(t *testing.T) {
-	var spec ColumnSpec
-	if err := json.Unmarshal([]byte(`{"name":"a","from":"tag:x"}`), &spec); err != nil || len(spec.From) != 1 {
-		t.Fatalf("string form: %v %v", spec.From, err)
-	}
-	if err := json.Unmarshal([]byte(`{"name":"a","from":["tag:x","const:y"]}`), &spec); err != nil || len(spec.From) != 2 {
-		t.Fatalf("array form: %v %v", spec.From, err)
-	}
-	if err := json.Unmarshal([]byte(`{"name":"a","from":5}`), &spec); err == nil {
-		t.Fatal("a number must be rejected")
 	}
 }
 
@@ -173,25 +167,6 @@ func TestLoadFromEnv_InvalidConfig(t *testing.T) {
 		if _, ok := os.LookupEnv(key); ok {
 			t.Errorf("%s still set after a failed init", key)
 		}
-	}
-}
-
-func TestNewSink_ConfigErrorAndAbsentSink(t *testing.T) {
-	prevCfg, prevErr := loadedConfig, configErr
-	t.Cleanup(func() { loadedConfig, configErr = prevCfg, prevErr })
-
-	loadedConfig, configErr = nil, errStartup
-	if _, err := NewSink(outputParams()); err != errStartup {
-		t.Fatalf("err = %v, want errStartup", err)
-	}
-
-	loadedConfig, configErr = &Config{Version: SchemaVersion}, nil
-	o, err := NewSink(outputParams())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := o.(noopSink); !ok {
-		t.Fatalf("absent sink section gave %T, want noopSink", o)
 	}
 }
 
@@ -280,5 +255,19 @@ func TestLoadFromEnv_CaseVariantsAndDuplicates(t *testing.T) {
 				t.Fatal("a listed key is still set")
 			}
 		})
+	}
+}
+
+// The schedule section is part of the strict configuration schema.
+func TestParseConfig_ScheduleSection(t *testing.T) {
+	cfg, err := Parse([]byte(`{"version":1,"throughput":{"schedule":{"stages":"[]","durationSec":"1","peakRps":"1","t0Ms":"1","warmupSec":2}}}`))
+	if err != nil || cfg.Throughput.Schedule == nil || cfg.Throughput.Schedule.WarmupSec != 2 {
+		t.Fatalf("cfg=%+v err=%v", cfg, err)
+	}
+	if _, err := Parse([]byte(`{"version":1,"throughput":{"schedule":{"stage":"[]"}}}`)); err == nil {
+		t.Fatal("an unknown schedule field must be rejected")
+	}
+	if _, err := Parse([]byte(`{"version":1,"throughput":{"podRps":0}}`)); err == nil {
+		t.Fatal("a flat section still needs podRps >= 1")
 	}
 }
