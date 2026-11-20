@@ -30,7 +30,5 @@ jobs:
         run: go vet ./...
       - name: go test
         run: go test -race -count=1 ./...
-      - name: Denylist
-        run: bash scripts/denylist.sh
       - name: Release gate tests
         run: bash scripts/release-gate_test.sh

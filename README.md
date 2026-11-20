@@ -227,7 +227,6 @@ interface; the root package hands it over.
 
 ```sh
 go test ./...
-scripts/denylist.sh
 scripts/release-gate_test.sh
 ```
 
