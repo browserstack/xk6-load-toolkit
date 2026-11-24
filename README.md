@@ -177,9 +177,13 @@ ones k6 itself requires.
 
 ## Distribution
 
-This repository publishes no binaries. A consumer builds k6 from a branch or tag
-of this repository with `build.sh` and runs `scripts/release-gate.sh` on each
-binary before using it. To inspect a built binary:
+This repository publishes no binaries. A consumer builds k6 from a commit of this
+repository with `build.sh` and runs `scripts/release-gate.sh` on each binary
+before using it. Every commit on `main` is tagged `vX.Y.Z` by
+`.github/workflows/tag-main.yml` (`scripts/tag-release.sh`), so a build of `main`
+can name its source by tag. [SOURCE.md](SOURCE.md) is the corresponding source for such a
+binary: every linked component at its exact version, the toolchain, and the steps
+to rebuild it. To inspect a built binary:
 
 ```sh
 go version -m dist/k6-linux-amd64     # module list and versions
