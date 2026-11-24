@@ -34,3 +34,5 @@ jobs:
         run: bash scripts/release-gate_test.sh
       - name: SOURCE.md lists the pinned components
         run: bash scripts/check-source-md.sh
+      - name: Release tag script tests
+        run: bash scripts/tag-release_test.sh
