@@ -14,16 +14,15 @@ was built from** is the source listing for that binary.
 
 Every commit on `main` gets a release tag, `vX.Y.Z`
 (`.github/workflows/tag-main.yml`). A binary built from `main` is identified by
-that tag and by its commit, in three places:
+that tag and by its commit:
 
 - the container image's labels: `org.opencontainers.image.version` (the tag),
   `org.opencontainers.image.revision` (the commit) and
   `org.opencontainers.image.source` (this repository);
-- the first line of each test run's k6 log, which links the tag on GitHub;
 - the record in the image:
 
   ```sh
-  cat /opt/xk6-load-toolkit/build-info.json   # "sourceTag", "commit", "arch", "sha256" of the binary
+  cat /opt/xk6-load-toolkit/build-info.json   # "commit", "arch", "sha256" of the binary
   ```
 
 Read this file at that tag (or commit):
@@ -36,7 +35,7 @@ Read this file at that tag (or commit):
 | Component | Go module | Version | Commit | Licence | Source |
 |---|---|---|---|---|---|
 | k6 | `go.k6.io/k6/v2` | v2.2.0 | `00a9a1b7f552d6bb4337278b10ae25aac0f4e666` | AGPL-3.0 | <https://github.com/grafana/k6/tree/v2.2.0> |
-| xk6-load-toolkit | `github.com/browserstack/xk6-load-toolkit` | the tag in `build-info.json` (`sourceTag`) | the `commit` in `build-info.json` | AGPL-3.0 | <https://github.com/browserstack/xk6-load-toolkit/tree/<tag>> |
+| xk6-load-toolkit | `github.com/browserstack/xk6-load-toolkit` | the image's `org.opencontainers.image.version` label | the `commit` in `build-info.json` (also the `org.opencontainers.image.revision` label) | AGPL-3.0 | <https://github.com/browserstack/xk6-load-toolkit/tree/<tag>> |
 
 ### Third-party extensions (15, pinned in `extensions.json`)
 
@@ -128,7 +127,7 @@ RUN GOOS=linux GOARCH="$TARGETARCH" CGO_ENABLED=0 ./build.sh --output /out/k6 &&
 
 ## Rebuilding the exact binary
 
-1. Read `commit` (or `sourceTag`), `arch` and `sha256` from `/opt/xk6-load-toolkit/build-info.json`
+1. Read `commit`, `arch` and `sha256` from `/opt/xk6-load-toolkit/build-info.json`
    in the image, and copy the binary out of it.
 2. Read the directory the original build checked this repository out to. Go
    records it in the binary, and it is part of the binary's contents:
