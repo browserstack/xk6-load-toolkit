@@ -1,0 +1,152 @@
+{
+  "k6Version": "v2.2.0",
+  "extensions": [
+    {
+      "name": "load-toolkit",
+      "module": "github.com/browserstack/xk6-load-toolkit",
+      "repoPath": ".",
+      "kind": "module",
+      "output": "load-toolkit-sink",
+      "imports": [
+        "k6/x/load-toolkit/throughput",
+        "k6/x/load-toolkit/tagfilter"
+      ],
+      "description": "This repository: the row sink output plus the request-rate limiter and tag filter modules."
+    },
+    {
+      "name": "dns",
+      "module": "github.com/grafana/xk6-dns",
+      "version": "v1.2.0",
+      "kind": "module",
+      "imports": "k6/x/dns",
+      "tier": "official",
+      "description": "k6 registry extension (official tier) providing k6/x/dns."
+    },
+    {
+      "name": "faker",
+      "module": "github.com/grafana/xk6-faker",
+      "version": "v0.5.3",
+      "kind": "module",
+      "imports": "k6/x/faker",
+      "tier": "official",
+      "description": "k6 registry extension (official tier) providing k6/x/faker."
+    },
+    {
+      "name": "icmp",
+      "module": "github.com/grafana/xk6-icmp",
+      "version": "v0.3.3",
+      "kind": "module",
+      "imports": "k6/x/icmp",
+      "tier": "official",
+      "description": "k6 registry extension (official tier) providing k6/x/icmp."
+    },
+    {
+      "name": "mqtt",
+      "module": "github.com/grafana/xk6-mqtt",
+      "version": "v0.3.2",
+      "kind": "module",
+      "imports": "k6/x/mqtt",
+      "tier": "official",
+      "description": "k6 registry extension (official tier) providing k6/x/mqtt."
+    },
+    {
+      "name": "redis",
+      "module": "github.com/grafana/xk6-redis",
+      "version": "v0.4.3",
+      "kind": "module",
+      "imports": "k6/x/redis",
+      "tier": "official",
+      "description": "k6 registry extension (official tier) providing k6/x/redis."
+    },
+    {
+      "name": "client-prometheus-remote",
+      "module": "github.com/grafana/xk6-client-prometheus-remote",
+      "version": "v0.5.3",
+      "kind": "module",
+      "imports": "k6/x/remotewrite",
+      "tier": "community",
+      "description": "k6 registry extension (community tier) providing k6/x/remotewrite."
+    },
+    {
+      "name": "sql",
+      "module": "github.com/grafana/xk6-sql",
+      "version": "v1.2.2",
+      "kind": "module",
+      "imports": "k6/x/sql",
+      "tier": "official",
+      "description": "k6 registry extension (official tier) providing k6/x/sql."
+    },
+    {
+      "name": "sql-driver-azuresql",
+      "module": "github.com/grafana/xk6-sql-driver-azuresql",
+      "version": "v0.3.1",
+      "kind": "module",
+      "imports": "k6/x/sql/driver/azuresql",
+      "tier": "community",
+      "description": "k6 registry extension (community tier) providing k6/x/sql/driver/azuresql."
+    },
+    {
+      "name": "sql-driver-clickhouse",
+      "module": "github.com/grafana/xk6-sql-driver-clickhouse",
+      "version": "v0.3.1",
+      "kind": "module",
+      "imports": "k6/x/sql/driver/clickhouse",
+      "tier": "community",
+      "description": "k6 registry extension (community tier) providing k6/x/sql/driver/clickhouse."
+    },
+    {
+      "name": "sql-driver-mysql",
+      "module": "github.com/grafana/xk6-sql-driver-mysql",
+      "version": "v0.4.1",
+      "kind": "module",
+      "imports": "k6/x/sql/driver/mysql",
+      "tier": "official",
+      "description": "k6 registry extension (official tier) providing k6/x/sql/driver/mysql."
+    },
+    {
+      "name": "sql-driver-postgres",
+      "module": "github.com/grafana/xk6-sql-driver-postgres",
+      "version": "v0.3.1",
+      "kind": "module",
+      "imports": "k6/x/sql/driver/postgres",
+      "tier": "official",
+      "description": "k6 registry extension (official tier) providing k6/x/sql/driver/postgres."
+    },
+    {
+      "name": "sql-driver-sqlserver",
+      "module": "github.com/grafana/xk6-sql-driver-sqlserver",
+      "version": "v0.3.1",
+      "kind": "module",
+      "imports": "k6/x/sql/driver/sqlserver",
+      "tier": "community",
+      "description": "k6 registry extension (community tier) providing k6/x/sql/driver/sqlserver."
+    },
+    {
+      "name": "tcp",
+      "module": "github.com/grafana/xk6-tcp",
+      "version": "v0.3.1",
+      "kind": "module",
+      "imports": "k6/x/tcp",
+      "tier": "official",
+      "description": "k6 registry extension (official tier) providing k6/x/tcp."
+    },
+    {
+      "name": "tls",
+      "module": "github.com/grafana/xk6-tls",
+      "version": "v0.3.1",
+      "kind": "module",
+      "imports": "k6/x/tls",
+      "tier": "community",
+      "description": "k6 registry extension (community tier) providing k6/x/tls."
+    },
+    {
+      "name": "client-tracing",
+      "module": "github.com/grafana/xk6-client-tracing",
+      "version": "v0.0.10",
+      "kind": "module",
+      "imports": "k6/x/tracing",
+      "tier": "community",
+      "description": "k6 registry extension (community tier) providing k6/x/tracing."
+    }
+  ]
+}
