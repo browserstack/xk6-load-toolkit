@@ -71,7 +71,7 @@ own licence.
 
 | Tool | Version | Licence | Source |
 |---|---|---|---|
-| Go toolchain | go1.26.8, image `golang:1.26-bookworm@sha256:9fdc884aacc3bec89b20ffc69f4bb369c78210e3e4f600387b5128b12c199f81` | BSD-3-Clause | <https://go.dev/dl/> |
+| Go toolchain | go1.26.11, image `golang:1.26.11-bookworm@sha256:dc40a13b61304647ed7e5d581d246b86413dfc29d63c6d018310feb93cd98fc0` | BSD-3-Clause | <https://go.dev/dl/> |
 | xk6 | v1.4.12 (`go.k6.io/xk6`, commit `3b5a796179b8f5e714fe25d9806e6ab44ea75e50`) | Apache-2.0 | <https://github.com/grafana/xk6/tree/v1.4.12> |
 | git, jq, bash | from the Go image's Debian bookworm packages | various | <https://packages.debian.org/bookworm/> |
 
@@ -96,7 +96,7 @@ The container stage the binary is built in. The `golang` image digest and the
 xk6 version are the pins listed under [Build tools](#build-tools).
 
 ```dockerfile
-FROM --platform=linux/amd64 golang:1.26-bookworm@sha256:9fdc884aacc3bec89b20ffc69f4bb369c78210e3e4f600387b5128b12c199f81 AS k6-builder
+FROM --platform=linux/amd64 golang:1.26.11-bookworm@sha256:dc40a13b61304647ed7e5d581d246b86413dfc29d63c6d018310feb93cd98fc0 AS k6-builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git jq && \
     rm -rf /var/lib/apt/lists/*
