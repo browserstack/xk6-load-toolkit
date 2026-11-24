@@ -32,3 +32,5 @@ jobs:
         run: go test -race -count=1 ./...
       - name: Release gate tests
         run: bash scripts/release-gate_test.sh
+      - name: SOURCE.md lists the pinned components
+        run: bash scripts/check-source-md.sh

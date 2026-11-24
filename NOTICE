@@ -1,10 +1,11 @@
 xk6-load-toolkit
 Licensed under the GNU Affero General Public License v3.0 (see LICENSE).
 
-The k6 binaries published with each release of this repository are built with
-xk6 from the components below, at the exact versions recorded in that release's
-extensions.json and release notes. Each component remains under its own licence;
-its source is available from the module path at that version.
+k6 binaries built from this repository are built with xk6 from the components
+below, at the exact versions pinned in extensions.json at the commit they were
+built from. SOURCE.md at that commit lists every component with its version,
+commit, licence and source link, plus the toolchain and build recipe needed to
+rebuild the binary. Each component remains under its own licence.
 
 k6 (go.k6.io/k6/v2), Grafana Labs                       AGPL-3.0
 github.com/grafana/xk6-dns                              AGPL-3.0
