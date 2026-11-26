@@ -271,3 +271,108 @@ func TestParseConfig_ScheduleSection(t *testing.T) {
 		t.Fatal("a flat section still needs podRps >= 1")
 	}
 }
+
+// fullSinkOptionsJSON sets every optional join, hold, bound and summary key.
+const fullSinkOptionsJSON = `{
+	"correlation": {"verdictMetric": "http_req_failed", "joinMetrics": ["op_result"]},
+	"hold": {"pendingMetaKey": "opPending", "pendingValue": "1", "max": "20s", "onExpireMeta": {"opState": "3"}},
+	"cardinality": {"maxTimeSeries": 1000, "exemptMetrics": ["op_result", "calls_seen"]},
+	"summary": {
+		"path": "/tmp/run-summary",
+		"keys": {"cardinalityLimitHit": "cardinalityLimitHit", "assertionsDropped": "assertionsDropped",
+			"unjoined": "unjoined", "seen": {"callsSeen": "calls_seen"}},
+		"static": {"sampleN": "4"}
+	},
+	"columns": [
+		{"name": "failed_verdict", "from": "computed:failedVerdict"},
+		{"name": "op_name", "from": "meta:opName", "maxRunes": 200, "distinct": {"limit": 500, "overflow": "~otherOperations"}},
+		{"name": "op_state", "from": "meta:opState", "type": "uint", "min": 1, "max": 3, "joinDefault": "3"},
+		{"name": "op_code", "from": "meta:opCode", "maxRunes": 80,
+			"when": [{"source": "meta:opState", "equals": "2"}],
+			"distinct": {"limit": 100, "overflow": "~otherCodes", "partitionBy": "meta:opCodeSource", "partitions": ["2"]}}
+	]
+}`
+
+// fullSinkOptions merges fullSinkOptionsJSON into the sink section; its columns
+// follow the base ones (indexes 16-19).
+func fullSinkOptions(d map[string]any) {
+	var extra map[string]any
+	if err := json.Unmarshal([]byte(fullSinkOptionsJSON), &extra); err != nil {
+		panic("fullSinkOptionsJSON: " + err.Error())
+	}
+	s := sinkOf(d)
+	corr := s["correlation"].(map[string]any)
+	for k, v := range extra["correlation"].(map[string]any) {
+		corr[k] = v
+	}
+	for _, k := range []string{"hold", "cardinality", "summary"} {
+		s[k] = extra[k]
+	}
+	s["columns"] = append(s["columns"].([]any), extra["columns"].([]any)...)
+}
+
+// The join, hold, bound and summary keys are part of the strict schema.
+func TestParseConfig_SinkJoinHoldSummaryKeys(t *testing.T) {
+	cfg, err := Parse(validConfigJSON(t, fullSinkOptions))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	sc := cfg.Sink
+	if sc.Hold == nil || sc.Hold.PendingMetaKey != "opPending" || sc.Summary == nil || sc.Summary.Keys.Seen["callsSeen"] != "calls_seen" ||
+		sc.Correlation.VerdictMetric != "http_req_failed" || len(sc.Cardinality.ExemptMetrics) != 2 {
+		t.Fatalf("sink = %+v", sc)
+	}
+}
+
+// A misspelt key in any new section is rejected, never silently ignored.
+func TestParseConfig_RejectsUnknownKeysInNewSections(t *testing.T) {
+	cases := map[string]func(map[string]any){
+		"hold":     func(s map[string]any) { s["hold"].(map[string]any)["pendingKey"] = "x" },
+		"summary":  func(s map[string]any) { s["summary"].(map[string]any)["file"] = "/tmp/x" },
+		"keys":     func(s map[string]any) { s["summary"].(map[string]any)["keys"].(map[string]any)["unattributed"] = "u" },
+		"column":   func(s map[string]any) { s["columns"].([]any)[0].(map[string]any)["maxRune"] = 3 },
+		"distinct": func(s map[string]any) { s["columns"].([]any)[17].(map[string]any)["distinct"].(map[string]any)["cap"] = 3 },
+		"when":     func(s map[string]any) { s["columns"].([]any)[19].(map[string]any)["when"].([]any)[0].(map[string]any)["is"] = "2" },
+		"correlation": func(s map[string]any) {
+			s["correlation"].(map[string]any)["joinMetric"] = "op_result"
+		},
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			raw := validConfigJSON(t, func(d map[string]any) {
+				fullSinkOptions(d)
+				mutate(sinkOf(d))
+			})
+			if _, err := Parse(raw); err == nil || !strings.Contains(err.Error(), "unknown field") {
+				t.Fatalf("err = %v, want an unknown-field rejection", err)
+			}
+		})
+	}
+}
+
+// The new keys are validated through Parse with the failing path in the error.
+func TestParseConfig_ValidatesNewSinkKeys(t *testing.T) {
+	cases := map[string]struct {
+		mutate func(map[string]any)
+		want   string
+	}{
+		"relative summary path": {func(s map[string]any) { s["summary"].(map[string]any)["path"] = "run-summary" }, "sink.summary.path"},
+		"no join metrics": {func(s map[string]any) {
+			delete(s["correlation"].(map[string]any), "joinMetrics")
+		}, "requires sink.correlation.joinMetrics"},
+		"zero hold max":    {func(s map[string]any) { s["hold"].(map[string]any)["max"] = "0s" }, "duration"},
+		"uint without max": {func(s map[string]any) { delete(s["columns"].([]any)[18].(map[string]any), "max") }, "sink.columns[18].max"},
+		"verdict collides": {func(s map[string]any) { s["correlation"].(map[string]any)["verdictMetric"] = "http_reqs" }, "verdictMetric"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			raw := validConfigJSON(t, func(d map[string]any) {
+				fullSinkOptions(d)
+				tc.mutate(sinkOf(d))
+			})
+			if _, err := Parse(raw); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want it to mention %q", err, tc.want)
+			}
+		})
+	}
+}

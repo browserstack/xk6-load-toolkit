@@ -118,6 +118,20 @@ type sink struct {
 	abortOnce      sync.Once
 	checkFilter    CheckFilter
 	cardinalityCfg CardinalityConfig
+
+	// Run summary (sink.summary). cardinalityHit is set when the guard stops
+	// the run; seenByMetric sets the seen flags of a metric's samples.
+	summaryPath    string
+	summary        SummaryConfig
+	cardinalityHit atomic.Bool
+	seenFlags      []seenFlag
+	seenByMetric   map[string][]*atomic.Bool
+}
+
+// seenFlag is one summary.keys.seen entry: set once a sample of its metric arrives.
+type seenFlag struct {
+	key  string
+	flag *atomic.Bool
 }
 
 // noopSink accepts samples and writes nothing; used when the sink section is absent.
@@ -192,7 +206,19 @@ func newSink(cfg *Config, checks CheckFilter) *sink {
 	if s.cardinalityCfg.Message == "" {
 		s.cardinalityCfg.Message = defaultCardinalityReason
 	}
-	s.cardinality = newCardinalityGuard(s.cardinalityCfg.MaxTimeSeries)
+	s.cardinality = newCardinalityGuard(s.cardinalityCfg.MaxTimeSeries, s.cardinalityCfg.ExemptMetrics...)
+
+	if sum := cfg.Summary; sum != nil {
+		s.summaryPath = sum.Path
+		s.summary = *sum
+		s.seenByMetric = make(map[string][]*atomic.Bool, len(sum.Keys.Seen))
+		for _, key := range sortedKeys(sum.Keys.Seen) {
+			flag := &atomic.Bool{}
+			s.seenFlags = append(s.seenFlags, seenFlag{key: key, flag: flag})
+			metric := sum.Keys.Seen[key]
+			s.seenByMetric[metric] = append(s.seenByMetric[metric], flag)
+		}
+	}
 
 	if cfg.CheckFilter {
 		s.checkFilter = checks
@@ -254,6 +280,7 @@ func (s *sink) fireCardinalityAbort() {
 			logf("cardinality limit hit but no test-run stop callback is registered; cannot abort run")
 			return
 		}
+		s.cardinalityHit.Store(true)
 		s.stopTestRun(errext.WithAbortReasonIfNone(
 			errext.WithExitCodeIfNone(errors.New(msg), exitcodes.ExitCode(s.cardinalityCfg.ExitCode)),
 			errext.AbortedByOutput,
@@ -268,6 +295,12 @@ func (s *sink) Start() error {
 	s.scriptData.clear()
 	s.pushAttempted.clear()
 	s.iteration.clear()
+	// A stale summary would report an earlier run's counters.
+	if s.summaryPath != "" {
+		if err := os.Remove(s.summaryPath); err != nil && !os.IsNotExist(err) {
+			logf("failed to clear stale summary %s: %v", filepath.Base(s.summaryPath), err)
+		}
+	}
 
 	s.wg.Add(1)
 	go s.runFlusher()
@@ -277,10 +310,73 @@ func (s *sink) Start() error {
 func (s *sink) Stop() error {
 	close(s.stopCh)
 	s.wg.Wait()
-	if err := s.flushAll(); err != nil {
-		return err
+	flushErr := s.flushAll()
+	// Whatever the final flush could not deliver is lost with the process: a
+	// failed final check insert, or checks never reached because the request
+	// insert failed first.
+	s.assertions.countUndelivered()
+	s.writeSummary()
+	if flushErr != nil {
+		return flushErr
 	}
 	return writeTotalRows(s.totalRowsPath, s.totalRows.Load())
+}
+
+// summaryLine renders the configured counters as k=v;k=v and a newline:
+// cardinalityLimitHit, assertionsDropped, the seen flags by key, unjoined,
+// then the static pairs by key.
+func (s *sink) summaryLine() string {
+	k := &s.summary.Keys
+	var parts []string
+	if k.CardinalityLimitHit != "" {
+		parts = append(parts, k.CardinalityLimitHit+"="+boolDigit(s.cardinalityHit.Load()))
+	}
+	if k.AssertionsDropped != "" {
+		parts = append(parts, k.AssertionsDropped+"="+strconv.FormatUint(s.assertions.droppedCount(), 10))
+	}
+	for _, f := range s.seenFlags {
+		parts = append(parts, f.key+"="+boolDigit(f.flag.Load()))
+	}
+	if k.Unjoined != "" {
+		parts = append(parts, k.Unjoined+"="+strconv.FormatUint(s.buffer.unjoinedCount(), 10))
+	}
+	for _, key := range sortedKeys(s.summary.Static) {
+		parts = append(parts, key+"="+s.summary.Static[key])
+	}
+	return strings.Join(parts, ";") + "\n"
+}
+
+// writeSummary replaces the summary file rather than writing through whatever
+// sits at the path, so a planted symlink is never followed. Best effort: a
+// missing file reads as no summary.
+func (s *sink) writeSummary() {
+	path := s.summaryPath
+	if path == "" {
+		return
+	}
+	name := filepath.Base(path)
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		logf("failed to replace summary %s: %v", name, err)
+		return
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		logf("failed to write summary %s: %v", name, err)
+		return
+	}
+	if _, err := f.WriteString(s.summaryLine()); err != nil {
+		logf("failed to write summary %s: %v", name, err)
+	}
+	if err := f.Close(); err != nil {
+		logf("failed to close summary %s: %v", name, err)
+	}
+}
+
+func boolDigit(b bool) string {
+	if b {
+		return "1"
+	}
+	return "0"
 }
 
 func (s *sink) getVUContext(vuID string) *vuReqContext {
@@ -307,12 +403,20 @@ func (s *sink) AddMetricSamples(sampleContainers []metrics.SampleContainer) {
 	checkMetric := s.cfg.Correlation.CheckMetric
 	for _, container := range sampleContainers {
 		for _, sample := range container.GetSamples() {
-			// Every sample counts against the budget; observe is true exactly once.
+			// Every sample but an exempt metric's counts against the budget;
+			// observe is true exactly once.
 			if s.cardinality.observe(sample.TimeSeries) {
 				s.fireCardinalityAbort()
 			}
 
 			metricName := sampleMetricName(sample)
+			// A seen metric only sets its summary flags; it never becomes a row.
+			if flags, ok := s.seenByMetric[metricName]; ok {
+				for _, f := range flags {
+					f.Store(true)
+				}
+				continue
+			}
 			tags := extractTags(sample)
 			// An absent group key is not the same as an empty one.
 			groupTag, hasGroupTag := tags["group"]

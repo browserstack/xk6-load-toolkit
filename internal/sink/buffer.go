@@ -24,6 +24,10 @@ var httpPhaseMetrics = map[string]struct{}{
 const (
 	defaultMetricBufferMax    = 500_000
 	defaultAssertionBufferMax = 100_000
+	defaultHoldMax            = 30 * time.Second
+	// maxUnjoinedPerSample bounds what one join sample's value adds to the
+	// unjoined counter; a script can emit the metric too.
+	maxUnjoinedPerSample = 1e6
 )
 
 // row is one rendered JSON object, without the trailing newline.
@@ -41,6 +45,12 @@ type rowEngine struct {
 	// keeps only these, so its memory does not grow with the script's tag count.
 	keepTags map[string]struct{}
 	keepMeta map[string]struct{}
+	// joinMetrics merge into a request row instead of forming one; hold, when
+	// set, delays a pending row until its join arrives.
+	joinMetrics map[string]struct{}
+	hold        *HoldConfig
+	// distinctCols are the indexes of the columns with a distinct budget.
+	distinctCols []int
 }
 
 // builtinTags are the tags the computed request values read.
@@ -50,14 +60,18 @@ func newRowEngine(cfg *Config) *rowEngine {
 	cols, _ := compileColumns(cfg.Columns, requestBuiltins, cfg.Constants, "sink.columns")
 	keepTags := toSet(append(builtinTags, cfg.Correlation.URLLegacyTag))
 	keepMeta := toSet([]string{cfg.Correlation.URLMetaKey})
-	for _, c := range cols {
-		for _, s := range c.sources {
+	var distinctCols []int
+	for i := range cols {
+		for _, s := range cols[i].allSources() {
 			switch {
 			case s.isTag:
 				keepTags[s.tag] = struct{}{}
 			case s.isMeta:
 				keepMeta[s.meta] = struct{}{}
 			}
+		}
+		if cols[i].budget != nil {
+			distinctCols = append(distinctCols, i)
 		}
 	}
 	return &rowEngine{
@@ -69,6 +83,9 @@ func newRowEngine(cfg *Config) *rowEngine {
 		wsSummedMetrics: toSet(cfg.Correlation.WSSummedMetrics),
 		keepTags:        keepTags,
 		keepMeta:        keepMeta,
+		joinMetrics:     toSet(cfg.Correlation.JoinMetrics),
+		hold:            cfg.Hold,
+		distinctCols:    distinctCols,
 	}
 }
 
@@ -100,6 +117,16 @@ type pendingRequest struct {
 	rendered row
 	// bytesReqID is kept so its index entry is removed with the request.
 	bytesReqID string
+	// verdictSet/verdictFailed carry the verdict metric's sample, joined marks a
+	// row a join sample reached, and pending a row held for its join until
+	// firstSeen plus the hold maximum.
+	verdictSet    bool
+	verdictFailed bool
+	joined        bool
+	pending       bool
+	firstSeen     time.Time
+	// resolved holds distinct-bounded column values, fixed on first arrival.
+	resolved map[int]string
 }
 
 // render produces the request's row, shifted to the send instant when enabled.
@@ -116,12 +143,47 @@ func (e *rowEngine) render(p *pendingRequest) row {
 			ts -= roundedInt64(wallMs)
 		}
 	}
-	v := rowView{
-		tags: p.tags, meta: p.meta, corr: e.corr, timestamp: ts,
+	v := e.view(p)
+	v.timestamp = ts
+	return e.columns.appendRow(nil, &v)
+}
+
+// view is what a column can read from a buffered request, without the timestamp.
+func (e *rowEngine) view(p *pendingRequest) rowView {
+	return rowView{
+		tags: p.tags, meta: p.meta, corr: e.corr,
 		duration: p.duration, latency: p.latency, connect: p.connect,
 		bytesSent: p.bytesSent, bytesReceived: p.bytesReceived,
+		verdictSet: p.verdictSet, verdictFailed: p.verdictFailed,
+		joined: p.joined, resolved: p.resolved,
 	}
-	return e.columns.appendRow(nil, &v)
+}
+
+// resolveDistinct fixes each distinct-bounded column the first time it has a
+// value, so the budget is spent in the order values arrive rather than the
+// order rows drain. Caller holds the buffer lock.
+func (e *rowEngine) resolveDistinct(p *pendingRequest) {
+	if len(e.distinctCols) == 0 {
+		return
+	}
+	var v rowView
+	built := false
+	for _, idx := range e.distinctCols {
+		if _, done := p.resolved[idx]; done {
+			continue
+		}
+		if !built {
+			v, built = e.view(p), true
+		}
+		value, ok := e.columns[idx].resolveDistinct(&v)
+		if !ok {
+			continue
+		}
+		if p.resolved == nil {
+			p.resolved = make(map[int]string, len(e.distinctCols))
+		}
+		p.resolved[idx] = value
+	}
 }
 
 // wsSummed accumulates one chatty WebSocket counter per group key.
@@ -143,6 +205,10 @@ type metricBuffer struct {
 	dropped uint64
 	wsRows  []row
 	wsSums  map[string]*wsSummed
+	// holdMax bounds how long a pending row waits for its join; unjoined counts
+	// join samples that found no row and held rows that expired. Both under mu.
+	holdMax  time.Duration
+	unjoined uint64
 }
 
 func newMetricBuffer(engine *rowEngine, maxEntries int, staleAfter time.Duration) *metricBuffer {
@@ -152,7 +218,7 @@ func newMetricBuffer(engine *rowEngine, maxEntries int, staleAfter time.Duration
 	if maxEntries <= 0 {
 		maxEntries = defaultMetricBufferMax
 	}
-	return &metricBuffer{
+	b := &metricBuffer{
 		engine:       engine,
 		staleAfter:   staleAfter,
 		entries:      make(map[string]*pendingRequest),
@@ -160,6 +226,11 @@ func newMetricBuffer(engine *rowEngine, maxEntries int, staleAfter time.Duration
 		maxEntries:   maxEntries,
 		wsSums:       make(map[string]*wsSummed),
 	}
+	if h := engine.hold; h != nil {
+		// A held row must leave before staleAfter would drop it.
+		b.holdMax = min(h.Max.or(defaultHoldMax), staleAfter)
+	}
+	return b
 }
 
 func (b *metricBuffer) add(sample metrics.Sample) {
@@ -174,8 +245,17 @@ func (b *metricBuffer) add(sample metrics.Sample) {
 		return
 	}
 
+	if _, ok := e.joinMetrics[metricName]; ok {
+		meta := extractMeta(sample)
+		b.mu.Lock()
+		b.addJoin(sample, meta)
+		b.mu.Unlock()
+		return
+	}
+
 	isBytes := metricName != "" && (metricName == e.corr.BytesSentMetric || metricName == e.corr.BytesReceivedMetric)
-	if _, ok := e.requestMetrics[metricName]; !ok && !isBytes {
+	isVerdict := metricName != "" && metricName == e.corr.VerdictMetric
+	if _, ok := e.requestMetrics[metricName]; !ok && !isBytes && !isVerdict {
 		return
 	}
 
@@ -202,7 +282,7 @@ func (b *metricBuffer) add(sample metrics.Sample) {
 			b.dropped++
 			return
 		}
-		entry = &pendingRequest{tags: map[string]string{}, meta: map[string]string{}, time: sample.Time}
+		entry = &pendingRequest{tags: map[string]string{}, meta: map[string]string{}, time: sample.Time, firstSeen: now}
 		b.entries[correlationID] = entry
 	}
 	mergeKept(entry.tags, tags, e.keepTags)
@@ -230,32 +310,86 @@ func (b *metricBuffer) add(sample metrics.Sample) {
 	case "http_req_tls_handshaking":
 		entry.tlsMs = sample.Value
 	}
+	if isVerdict {
+		entry.verdictSet = true
+		entry.verdictFailed = sample.Value != 0
+	}
+	if h := e.hold; h != nil && !entry.joined && meta[h.PendingMetaKey] == h.PendingValue {
+		entry.pending = true
+	}
+	e.resolveDistinct(entry)
+}
+
+// entryByReqID finds a buffered request by the request id in meta; nil when the
+// id is absent or the request already left the buffer. Caller holds b.mu.
+func (b *metricBuffer) entryByReqID(meta map[string]string) *pendingRequest {
+	key := b.engine.corr.BytesIDMetaKey
+	if key == "" {
+		return nil
+	}
+	reqID := meta[key]
+	if reqID == "" {
+		return nil
+	}
+	correlationID, ok := b.byBytesReqID[reqID]
+	if !ok {
+		return nil
+	}
+	return b.entries[correlationID]
 }
 
 // addRequestBytes sets a buffered request's byte count from a counter carrying
 // its request id. A counter whose request is gone never forms a row. Caller holds b.mu.
 func (b *metricBuffer) addRequestBytes(metricName string, sample metrics.Sample, meta map[string]string) {
-	corr := b.engine.corr
-	if corr.BytesIDMetaKey == "" {
+	entry := b.entryByReqID(meta)
+	if entry == nil {
 		return
 	}
-	reqID := meta[corr.BytesIDMetaKey]
-	if reqID == "" {
-		return
-	}
-	correlationID, ok := b.byBytesReqID[reqID]
-	if !ok {
-		return
-	}
-	entry, ok := b.entries[correlationID]
-	if !ok {
-		return
-	}
-	if metricName == corr.BytesSentMetric {
+	if metricName == b.engine.corr.BytesSentMetric {
 		entry.bytesSent = roundedInt64(sample.Value)
 	} else {
 		entry.bytesReceived = roundedInt64(sample.Value)
 	}
+}
+
+// addJoin merges a join sample's metadata into the request row with its request
+// id. A join sample with no row is counted unjoined, unless it carries the hold's
+// pending marker: that row was already counted when its hold expired. Caller holds b.mu.
+func (b *metricBuffer) addJoin(sample metrics.Sample, meta map[string]string) {
+	e := b.engine
+	entry := b.entryByReqID(meta)
+	if entry == nil {
+		if h := e.hold; h != nil && meta[h.PendingMetaKey] == h.PendingValue {
+			return
+		}
+		n := sample.Value
+		if !(n >= 1 && n <= maxUnjoinedPerSample) { // NaN, Inf and junk count as one
+			n = 1
+		}
+		b.unjoined += uint64(math.Round(n))
+		return
+	}
+	entry.pending = false
+	entry.joined = true
+	mergeKept(entry.meta, meta, e.keepMeta)
+	e.resolveDistinct(entry)
+}
+
+// expireHold releases a held row whose join never arrived: it takes the hold's
+// onExpireMeta and counts as unjoined. Caller holds b.mu.
+func (b *metricBuffer) expireHold(entry *pendingRequest) {
+	entry.pending = false
+	for k, v := range b.engine.hold.OnExpireMeta {
+		entry.meta[k] = v
+	}
+	b.unjoined++
+	b.engine.resolveDistinct(entry)
+}
+
+func (b *metricBuffer) unjoinedCount() uint64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.unjoined
 }
 
 // removeEntry deletes a buffered request and its request-id index. Caller holds b.mu.
@@ -337,9 +471,16 @@ func (b *metricBuffer) drainReady(completeBefore time.Time) []row {
 	defer b.mu.Unlock()
 
 	rows := make([]row, 0)
-	staleCutoff := time.Now().Add(-b.staleAfter)
+	now := time.Now()
+	staleCutoff := now.Add(-b.staleAfter)
 	for id, entry := range b.entries {
 		if entry.hasRequestLine && !entry.lastSeen.After(completeBefore) {
+			if entry.pending {
+				if now.Sub(entry.firstSeen) < b.holdMax {
+					continue
+				}
+				b.expireHold(entry)
+			}
 			rows = append(rows, b.engine.render(entry))
 			b.removeEntry(id, entry)
 			continue
@@ -358,6 +499,9 @@ func (b *metricBuffer) drainAll() []row {
 	rows := make([]row, 0, len(b.entries))
 	for id, entry := range b.entries {
 		if entry.hasRequestLine {
+			if entry.pending {
+				b.expireHold(entry)
+			}
 			rows = append(rows, b.engine.render(entry))
 		}
 		b.removeEntry(id, entry)
@@ -410,6 +554,8 @@ type assertionBuffer struct {
 	corr    *CorrelationConfig
 	maxRows int
 	rows    []row
+	// dropped counts check rows that will never be delivered.
+	dropped uint64
 }
 
 func newAssertionBuffer(cfg *Config) *assertionBuffer {
@@ -441,6 +587,7 @@ func (b *assertionBuffer) add(sample metrics.Sample, parentLabel, parentStatus s
 	if len(b.rows) > b.maxRows {
 		overflow := len(b.rows) - b.maxRows
 		b.rows = append(b.rows[:0], b.rows[overflow:]...)
+		b.dropped += uint64(overflow)
 	}
 	b.mu.Unlock()
 }
@@ -467,8 +614,24 @@ func (b *assertionBuffer) requeue(rows []row) {
 	merged = append(merged, b.rows...)
 	b.rows = merged
 	if len(b.rows) > b.maxRows {
+		b.dropped += uint64(len(b.rows) - b.maxRows)
 		b.rows = b.rows[:b.maxRows]
 	}
+}
+
+// countUndelivered moves whatever is still buffered into the dropped count.
+// Called once, after the final flush: nothing flushes the buffer again.
+func (b *assertionBuffer) countUndelivered() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.dropped += uint64(len(b.rows))
+	b.rows = nil
+}
+
+func (b *assertionBuffer) droppedCount() uint64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.dropped
 }
 
 func sampleMetricName(sample metrics.Sample) string {

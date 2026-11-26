@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 type valueKind int
@@ -13,6 +14,7 @@ const (
 	kindString valueKind = iota
 	kindInt
 	kindBool
+	kindUint // a string source parsed and bounded by the column's min/max
 )
 
 // rowView is everything a column source can read for one output row.
@@ -36,6 +38,14 @@ type rowView struct {
 	parentLabel  string
 	parentStatus string
 	failed       bool
+
+	// Request rows only: whether a verdict-metric sample reached the row and
+	// what it said, whether a join sample reached it, and the values of its
+	// distinct-bounded columns by column index (first value wins).
+	verdictSet    bool
+	verdictFailed bool
+	joined        bool
+	resolved      map[int]string
 }
 
 type builtin struct {
@@ -67,6 +77,18 @@ var requestBuiltins = map[string]builtin{
 	"connect":       {kind: kindInt, num: func(v *rowView) int64 { return v.connect }},
 	"bytesSent":     {kind: kindInt, num: func(v *rowView) int64 { return v.bytesSent }},
 	"bytesReceived": {kind: kindInt, num: func(v *rowView) int64 { return v.bytesReceived }},
+	// failedVerdict is 1 when the verdict metric reported a failure, 0 when it
+	// reported success and -1 when no verdict arrived (and on WebSocket rows).
+	"failedVerdict": {kind: kindInt, num: func(v *rowView) int64 {
+		switch {
+		case !v.verdictSet:
+			return -1
+		case v.verdictFailed:
+			return 1
+		default:
+			return 0
+		}
+	}},
 }
 
 // assertionBuiltins are the computed values available to sink.assertionColumns.
@@ -102,6 +124,53 @@ type column struct {
 	key     []byte // `"name":`
 	kind    valueKind
 	sources []source
+
+	// Optional bounds; all zero for a plain column.
+	min, max       uint64 // kindUint range
+	maxRunes       int    // > 0 truncates a string value
+	when           []condition
+	budget         *distinctBudget
+	joinDefault    *string
+	joinDefaultNum uint64 // joinDefault parsed, for kindUint
+}
+
+// condition holds when its source reads equals, or any non-empty value when
+// equals is nil.
+type condition struct {
+	src    source
+	equals *string
+}
+
+// distinctBudget caps the distinct values one column writes per process.
+// Values beyond the limit are written as overflow. It is shared by every row
+// the column renders, so it carries its own lock.
+type distinctBudget struct {
+	limit     int
+	overflow  string
+	partition *source        // nil: one budget
+	buckets   map[string]int // partition value -> budget index; unlisted values use 0
+
+	mu   sync.Mutex
+	seen []map[string]struct{}
+}
+
+// admit returns value while its budget holds it or has room, else the overflow value.
+func (d *distinctBudget) admit(v *rowView, value string) string {
+	bucket := 0
+	if d.partition != nil {
+		bucket = d.buckets[d.partition.read(v)]
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	set := d.seen[bucket]
+	if _, ok := set[value]; ok {
+		return value
+	}
+	if len(set) >= d.limit {
+		return d.overflow
+	}
+	set[value] = struct{}{}
+	return value
 }
 
 type columns []column
@@ -136,9 +205,119 @@ func compileColumns(specs []ColumnSpec, builtins map[string]builtin, constants m
 			col.kind = kind
 			col.sources = append(col.sources, src)
 		}
+		if err := compileBounds(&col, spec, builtins, constants, where); err != nil {
+			return nil, err
+		}
 		out = append(out, col)
 	}
 	return out, nil
+}
+
+// compileBounds applies a column's optional type, bounds, conditions and default.
+func compileBounds(col *column, spec ColumnSpec, builtins map[string]builtin, constants map[string]string, where string) error {
+	switch spec.Type {
+	case "", "string":
+		if spec.Min != nil || spec.Max != nil {
+			return fmt.Errorf("%s: min and max apply only to type \"uint\"", where)
+		}
+	case "uint":
+		if col.kind != kindString {
+			return fmt.Errorf("%s.type: \"uint\" reads string sources (tag:, meta:, const:), not a numeric or boolean computed value", where)
+		}
+		if spec.Max == nil {
+			return fmt.Errorf("%s.max: required for type \"uint\"", where)
+		}
+		col.max = *spec.Max
+		if spec.Min != nil {
+			col.min = *spec.Min
+		}
+		if col.min > col.max {
+			return fmt.Errorf("%s.min: must not exceed max", where)
+		}
+		if spec.MaxRunes != 0 || spec.Distinct != nil {
+			return fmt.Errorf("%s: maxRunes and distinct apply only to string columns", where)
+		}
+		col.kind = kindUint
+	default:
+		return fmt.Errorf("%s.type: unknown type %q (want \"string\" or \"uint\")", where, spec.Type)
+	}
+
+	if spec.MaxRunes < 0 {
+		return fmt.Errorf("%s.maxRunes: must not be negative", where)
+	}
+	if (spec.MaxRunes > 0 || spec.Distinct != nil || spec.JoinDefault != nil || len(spec.When) > 0) &&
+		col.kind != kindString && col.kind != kindUint {
+		return fmt.Errorf("%s: bounds, conditions and joinDefault do not apply to a numeric or boolean computed value", where)
+	}
+	col.maxRunes = spec.MaxRunes
+
+	for j, w := range spec.When {
+		src, kind, err := parseSource(w.Source, builtins, constants)
+		if err != nil {
+			return fmt.Errorf("%s.when[%d].source: %w", where, j, err)
+		}
+		if kind != kindString {
+			return fmt.Errorf("%s.when[%d].source: must be a string source", where, j)
+		}
+		col.when = append(col.when, condition{src: src, equals: w.Equals})
+	}
+
+	if d := spec.Distinct; d != nil {
+		if d.Limit <= 0 {
+			return fmt.Errorf("%s.distinct.limit: must be positive", where)
+		}
+		if d.Overflow == "" {
+			return fmt.Errorf("%s.distinct.overflow: must not be empty", where)
+		}
+		if (d.PartitionBy == "") != (len(d.Partitions) == 0) {
+			return fmt.Errorf("%s.distinct: partitionBy and partitions are set together", where)
+		}
+		budget := &distinctBudget{limit: d.Limit, overflow: d.Overflow, seen: []map[string]struct{}{{}}}
+		if d.PartitionBy != "" {
+			src, kind, err := parseSource(d.PartitionBy, builtins, constants)
+			if err != nil {
+				return fmt.Errorf("%s.distinct.partitionBy: %w", where, err)
+			}
+			if kind != kindString {
+				return fmt.Errorf("%s.distinct.partitionBy: must be a string source", where)
+			}
+			budget.partition = &src
+			budget.buckets = make(map[string]int, len(d.Partitions))
+			for _, p := range d.Partitions {
+				if _, dup := budget.buckets[p]; dup {
+					continue
+				}
+				budget.buckets[p] = len(budget.seen)
+				budget.seen = append(budget.seen, map[string]struct{}{})
+			}
+		}
+		col.budget = budget
+	}
+
+	if spec.JoinDefault != nil {
+		value := *spec.JoinDefault
+		if col.kind == kindUint {
+			n, err := strconv.ParseUint(value, 10, 64)
+			if err != nil || n < col.min || n > col.max {
+				return fmt.Errorf("%s.joinDefault: %q is not a number in [min, max]", where, value)
+			}
+			col.joinDefaultNum = n
+		}
+		col.joinDefault = &value
+	}
+	return nil
+}
+
+// allSources lists every source the column reads, conditions and partition included.
+func (c *column) allSources() []source {
+	out := append([]source(nil), c.sources...)
+	for _, w := range c.when {
+		out = append(out, w.src)
+	}
+	if c.budget != nil && c.budget.partition != nil {
+		out = append(out, *c.budget.partition)
+	}
+	return out
 }
 
 func parseSource(raw string, builtins map[string]builtin, constants map[string]string) (source, valueKind, error) {
@@ -183,18 +362,105 @@ func (cols columns) appendRow(buf []byte, v *rowView) []byte {
 			buf = strconv.AppendInt(buf, c.sources[0].builtin.num(v), 10)
 		case kindBool:
 			buf = strconv.AppendBool(buf, c.sources[0].builtin.boolean(v))
+		case kindUint:
+			buf = strconv.AppendUint(buf, c.uintValue(v), 10)
 		default:
-			value := ""
-			for _, s := range c.sources {
-				if value = s.read(v); value != "" {
-					break
-				}
-			}
-			encoded, _ := json.Marshal(value)
+			encoded, _ := json.Marshal(c.stringValue(i, v))
 			buf = append(buf, encoded...)
 		}
 	}
 	return append(buf, '}')
+}
+
+// raw is the first non-empty string source.
+func (c *column) raw(v *rowView) string {
+	for _, s := range c.sources {
+		if value := s.read(v); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+// conditionsHold reports whether every when condition holds.
+func (c *column) conditionsHold(v *rowView) bool {
+	for _, w := range c.when {
+		got := w.src.read(v)
+		if w.equals == nil {
+			if got == "" {
+				return false
+			}
+		} else if got != *w.equals {
+			return false
+		}
+	}
+	return true
+}
+
+// stringValue renders a string column. Without bounds it is the first
+// non-empty source, exactly as before bounds existed.
+func (c *column) stringValue(idx int, v *rowView) string {
+	if len(c.when) > 0 && !c.conditionsHold(v) {
+		return ""
+	}
+	if c.budget != nil {
+		if value, ok := v.resolved[idx]; ok {
+			return value
+		}
+	}
+	value := c.raw(v)
+	if value == "" {
+		if v.joined && c.joinDefault != nil {
+			return *c.joinDefault
+		}
+		return ""
+	}
+	value = truncateRunes(value, c.maxRunes)
+	if c.budget != nil {
+		value = c.budget.admit(v, value)
+	}
+	return value
+}
+
+// resolveDistinct fixes a distinct-bounded column's value the first time it is
+// non-empty, so the budget is spent in arrival order. ok is false while the
+// column has no value yet.
+func (c *column) resolveDistinct(v *rowView) (string, bool) {
+	if !c.conditionsHold(v) {
+		return "", false
+	}
+	value := truncateRunes(c.raw(v), c.maxRunes)
+	if value == "" {
+		return "", false
+	}
+	return c.budget.admit(v, value), true
+}
+
+// uintValue parses a uint column; unparseable or out-of-range values give 0,
+// or joinDefault on a joined row.
+func (c *column) uintValue(v *rowView) uint64 {
+	if !c.conditionsHold(v) {
+		return 0
+	}
+	if n, err := strconv.ParseUint(c.raw(v), 10, 64); err == nil && n >= c.min && n <= c.max {
+		return n
+	}
+	if v.joined && c.joinDefault != nil {
+		return c.joinDefaultNum
+	}
+	return 0
+}
+
+// truncateRunes keeps at most n runes of s; n <= 0 keeps all of it.
+func truncateRunes(s string, n int) string {
+	if n <= 0 || len(s) <= n {
+		return s
+	}
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
 }
 
 func statusMessage(v *rowView) string {

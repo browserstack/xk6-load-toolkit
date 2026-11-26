@@ -104,7 +104,13 @@ Rows are posted as `JSONEachRow` to a ClickHouse-HTTP-compatible endpoint
 | `sendTimeRestamp` | stamp request rows at the send instant instead of the response |
 | `checkFilter` | drop check samples recorded against requests `tagFilter` skipped |
 | `markers` | progress files; see below |
-| `cardinality` | `{maxTimeSeries, exitCode, message}`; see below |
+| `cardinality` | `{maxTimeSeries, exitCode, message, exemptMetrics}`; see below |
+| `hold` | hold a pending request row until its joined result arrives; see below |
+| `summary` | a one-line run summary file written at stop; see below |
+
+Every key added after the first release (`correlation.verdictMetric`,
+`correlation.joinMetrics`, `hold`, `summary`, `cardinality.exemptMetrics` and the
+column bounds) is optional; without them rows are byte-for-byte what they were.
 
 #### Columns
 
@@ -124,10 +130,26 @@ WebSocket), `errorCount`, `url` (method-prefixed real URL), `requestName`
 (method-prefixed name tag, or the metric name on WebSocket rows), `group`, `vus`,
 `duration`, `latency`, `connect`, `bytesSent`, `bytesReceived`.
 
+Request rows can also read `failedVerdict`: `1` when the
+`correlation.verdictMetric` sample reported a failure, `0` when it reported
+success and `-1` when none arrived (and on WebSocket rows). It requires
+`correlation.verdictMetric`.
+
 Check rows (`assertionColumns`): `timestamp`, `parentLabel` and `parentStatus`
 (the name/url and status of the same VU's previous request), `failed`.
 
 Numeric and boolean built-ins cannot be part of a fallback list.
+
+A string-sourced column can carry optional bounds:
+
+| Key | Meaning |
+|---|---|
+| `type` | `"string"` (default) or `"uint"`: parse the value and write it as a JSON number; unparseable or outside `[min, max]` writes `0` |
+| `min`, `max` | the `uint` range; `max` is required, `min` defaults to 0 |
+| `maxRunes` | truncate a string to that many runes |
+| `distinct` | `{limit, overflow, partitionBy, partitions}`: at most `limit` distinct values per process; later new values are written as `overflow`. With `partitionBy` (a source) each value listed in `partitions` has its own budget and every other value shares one. On request rows a value is fixed the first time the row has one |
+| `when` | `[{source, equals}]`: all must hold, else the column is empty (`0` for `uint`); without `equals` a condition holds on any non-empty value |
+| `joinDefault` | written on a row a join sample reached when the sources give no valid value; requires `correlation.joinMetrics` |
 
 #### Correlation
 
@@ -140,6 +162,17 @@ Numeric and boolean built-ins cannot be part of a fallback list.
 | `wsSummedMetrics` | WebSocket counters summed per flush and per url/status/scenario |
 | `wsErrorMetric`, `wsErrorMetaKey` | a WebSocket error metric whose metadata carries the cause for `statusMessage` |
 | `checkMetric` | the check metric (`checks`) |
+| `verdictMetric` | a per-request pass/fail metric (e.g. `http_req_failed`), joined to its request by the same key as the phase metrics; feeds `computed:failedVerdict` |
+| `joinMetrics` | metrics that never form rows: each sample's metadata is merged into the request row carrying the same `bytesIdMetaKey` id (requires `bytesIdMetaKey`). A sample that finds no row adds its value (1 to 1e6, anything else counts as 1) to the `unjoined` counter |
+
+#### Hold
+
+`{pendingMetaKey, pendingValue, max, onExpireMeta}`. A request row whose samples
+carry `pendingMetaKey: pendingValue` is held until a join sample reaches it, or
+until `max` (default 30s, never more than `transport.staleAfter`) after it was
+first seen. On expiry, and at the final flush, `onExpireMeta` is merged into the
+row's metadata and `unjoined` is incremented; the late join sample, which carries
+the same marker, is then not counted again. Requires `correlation.joinMetrics`.
 
 #### Markers
 
@@ -156,6 +189,61 @@ When the number of distinct time series (metric plus indexed tags) exceeds
 `maxTimeSeries`, the run is stopped through k6's test-run-stop hook with
 `exitCode` (default 105) and `message`, in which `{count}` and `{limit}` are
 replaced. Buffered rows are still flushed. `maxTimeSeries <= 0` disables it.
+Samples of an `exemptMetrics` metric never count toward the limit; the names
+are matched exactly.
+
+#### Summary
+
+`{path, keys, static}`. At stop the sink writes one line of `key=value` pairs
+joined by `;` to `path` (absolute), even when the final flush fails. Only the
+configured keys are written, in this order:
+
+| `keys.*` | Value |
+|---|---|
+| `cardinalityLimitHit` | `1` when the cardinality guard stopped the run |
+| `assertionsDropped` | check rows that will never be delivered: shed on overflow or requeue, or still buffered after the final flush |
+| `seen` | `{<key>: <metric>}`, by key: `1` once a sample of the metric arrived. A seen metric never becomes a row |
+| `unjoined` | join samples that found no row plus held rows that expired; requires `correlation.joinMetrics` |
+
+`static` pairs follow, by key. Keys match `[A-Za-z0-9_]+`. The file is removed
+at start and replaced (never written through a symlink) at stop.
+
+#### Example: joining a separately reported result
+
+A script records each request with a `reqId` metadata id and, for requests whose
+result is reported later, `pending: "1"`. It reports the result as a sample of
+`op_result` carrying the same `reqId` and a `state`, and once per VU a `calls_seen`
+sample.
+
+```json
+{
+  "correlation": {
+    "bytesIdMetaKey": "reqId",
+    "verdictMetric": "http_req_failed",
+    "joinMetrics": ["op_result"]
+  },
+  "hold": {"pendingMetaKey": "pending", "pendingValue": "1", "max": "30s", "onExpireMeta": {"state": "3"}},
+  "cardinality": {"maxTimeSeries": 10000, "exemptMetrics": ["op_result", "calls_seen"]},
+  "columns": [
+    {"name": "failed", "from": "computed:failedVerdict"},
+    {"name": "op", "from": "meta:op", "maxRunes": 200, "distinct": {"limit": 500, "overflow": "~other"}},
+    {"name": "state", "from": "meta:state", "type": "uint", "min": 1, "max": 3, "joinDefault": "3"},
+    {"name": "code", "from": "meta:code", "maxRunes": 80,
+      "when": [{"source": "meta:state", "equals": "2"}],
+      "distinct": {"limit": 100, "overflow": "~other", "partitionBy": "meta:codeSource", "partitions": ["2"]}}
+  ],
+  "summary": {
+    "path": "/var/run/k6/summary",
+    "keys": {"cardinalityLimitHit": "limitHit", "assertionsDropped": "checksDropped",
+             "unjoined": "unjoined", "seen": {"callsSeen": "calls_seen"}},
+    "static": {"sampleRate": "1"}
+  }
+}
+```
+
+(Only the keys this section adds are shown; `columns` would also list the usual
+ones.) The summary then reads, for example,
+`limitHit=0;checksDropped=0;callsSeen=1;unjoined=0;sampleRate=1`.
 
 ## Building k6 with the bundled extensions
 
