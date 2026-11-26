@@ -326,19 +326,22 @@ func TestParseConfig_SinkJoinHoldSummaryKeys(t *testing.T) {
 
 // A misspelt key in any new section is rejected, never silently ignored.
 func TestParseConfig_RejectsUnknownKeysInNewSections(t *testing.T) {
-	cases := map[string]func(map[string]any){
-		"hold":     func(s map[string]any) { s["hold"].(map[string]any)["pendingKey"] = "x" },
-		"summary":  func(s map[string]any) { s["summary"].(map[string]any)["file"] = "/tmp/x" },
-		"keys":     func(s map[string]any) { s["summary"].(map[string]any)["keys"].(map[string]any)["unattributed"] = "u" },
-		"column":   func(s map[string]any) { s["columns"].([]any)[0].(map[string]any)["maxRune"] = 3 },
-		"distinct": func(s map[string]any) { s["columns"].([]any)[17].(map[string]any)["distinct"].(map[string]any)["cap"] = 3 },
-		"when":     func(s map[string]any) { s["columns"].([]any)[19].(map[string]any)["when"].([]any)[0].(map[string]any)["is"] = "2" },
-		"correlation": func(s map[string]any) {
-			s["correlation"].(map[string]any)["joinMetric"] = "op_result"
-		},
+	type unknownKeyCase struct {
+		name   string
+		mutate func(map[string]any)
 	}
-	for name, mutate := range cases {
-		t.Run(name, func(t *testing.T) {
+	cases := []unknownKeyCase{
+		{"hold", func(s map[string]any) { s["hold"].(map[string]any)["pendingKey"] = "x" }},
+		{"summary", func(s map[string]any) { s["summary"].(map[string]any)["file"] = "/tmp/x" }},
+		{"keys", func(s map[string]any) { s["summary"].(map[string]any)["keys"].(map[string]any)["unattributed"] = "u" }},
+		{"column", func(s map[string]any) { s["columns"].([]any)[0].(map[string]any)["maxRune"] = 3 }},
+		{"distinct", func(s map[string]any) { s["columns"].([]any)[17].(map[string]any)["distinct"].(map[string]any)["cap"] = 3 }},
+		{"when", func(s map[string]any) { s["columns"].([]any)[19].(map[string]any)["when"].([]any)[0].(map[string]any)["is"] = "2" }},
+		{"correlation", func(s map[string]any) { s["correlation"].(map[string]any)["joinMetric"] = "op_result" }},
+	}
+	for _, tc := range cases {
+		mutate := tc.mutate
+		t.Run(tc.name, func(t *testing.T) {
 			raw := validConfigJSON(t, func(d map[string]any) {
 				fullSinkOptions(d)
 				mutate(sinkOf(d))
@@ -352,20 +355,21 @@ func TestParseConfig_RejectsUnknownKeysInNewSections(t *testing.T) {
 
 // The new keys are validated through Parse with the failing path in the error.
 func TestParseConfig_ValidatesNewSinkKeys(t *testing.T) {
-	cases := map[string]struct {
+	type validationCase struct {
+		name   string
 		mutate func(map[string]any)
 		want   string
-	}{
-		"relative summary path": {func(s map[string]any) { s["summary"].(map[string]any)["path"] = "run-summary" }, "sink.summary.path"},
-		"no join metrics": {func(s map[string]any) {
-			delete(s["correlation"].(map[string]any), "joinMetrics")
-		}, "requires sink.correlation.joinMetrics"},
-		"zero hold max":    {func(s map[string]any) { s["hold"].(map[string]any)["max"] = "0s" }, "duration"},
-		"uint without max": {func(s map[string]any) { delete(s["columns"].([]any)[18].(map[string]any), "max") }, "sink.columns[18].max"},
-		"verdict collides": {func(s map[string]any) { s["correlation"].(map[string]any)["verdictMetric"] = "http_reqs" }, "verdictMetric"},
 	}
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
+	cases := []validationCase{
+		{"relative summary path", func(s map[string]any) { s["summary"].(map[string]any)["path"] = "run-summary" }, "sink.summary.path"},
+		{"no join metrics", func(s map[string]any) { delete(s["correlation"].(map[string]any), "joinMetrics") }, "requires sink.correlation.joinMetrics"},
+		{"zero hold max", func(s map[string]any) { s["hold"].(map[string]any)["max"] = "0s" }, "duration"},
+		{"uint without max", func(s map[string]any) { delete(s["columns"].([]any)[18].(map[string]any), "max") }, "sink.columns[18].max"},
+		{"verdict collides", func(s map[string]any) { s["correlation"].(map[string]any)["verdictMetric"] = "http_reqs" }, "verdictMetric"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
 			raw := validConfigJSON(t, func(d map[string]any) {
 				fullSinkOptions(d)
 				tc.mutate(sinkOf(d))
