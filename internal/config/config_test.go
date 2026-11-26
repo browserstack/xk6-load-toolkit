@@ -335,8 +335,12 @@ func TestParseConfig_RejectsUnknownKeysInNewSections(t *testing.T) {
 		{"summary", func(s map[string]any) { s["summary"].(map[string]any)["file"] = "/tmp/x" }},
 		{"keys", func(s map[string]any) { s["summary"].(map[string]any)["keys"].(map[string]any)["unattributed"] = "u" }},
 		{"column", func(s map[string]any) { s["columns"].([]any)[0].(map[string]any)["maxRune"] = 3 }},
-		{"distinct", func(s map[string]any) { s["columns"].([]any)[17].(map[string]any)["distinct"].(map[string]any)["cap"] = 3 }},
-		{"when", func(s map[string]any) { s["columns"].([]any)[19].(map[string]any)["when"].([]any)[0].(map[string]any)["is"] = "2" }},
+		{"distinct", func(s map[string]any) {
+			s["columns"].([]any)[17].(map[string]any)["distinct"].(map[string]any)["cap"] = 3
+		}},
+		{"when", func(s map[string]any) {
+			s["columns"].([]any)[19].(map[string]any)["when"].([]any)[0].(map[string]any)["is"] = "2"
+		}},
 		{"correlation", func(s map[string]any) { s["correlation"].(map[string]any)["joinMetric"] = "op_result" }},
 	}
 	for _, tc := range cases {
