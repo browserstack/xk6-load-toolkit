@@ -18,6 +18,8 @@ type cardinalityGuard struct {
 	mu    sync.Mutex
 	seen  map[metrics.TimeSeries]struct{}
 	limit int // <= 0 disables the guard
+	// exempt names metrics that never count toward the limit.
+	exempt map[string]struct{}
 
 	// tripped is read lock-free first, so after the trip each sample costs one atomic load.
 	tripped atomic.Bool
@@ -25,11 +27,14 @@ type cardinalityGuard struct {
 }
 
 // newCardinalityGuard returns a guard for the budget. A limit <= 0 never
-// allocates and never trips.
-func newCardinalityGuard(limit int) *cardinalityGuard {
+// allocates and never trips. Samples of an exempt metric are never counted.
+func newCardinalityGuard(limit int, exempt ...string) *cardinalityGuard {
 	g := &cardinalityGuard{limit: limit}
 	if limit > 0 {
 		g.seen = make(map[metrics.TimeSeries]struct{})
+		if len(exempt) > 0 {
+			g.exempt = toSet(exempt)
+		}
 	}
 	return g
 }
@@ -43,6 +48,11 @@ func (g *cardinalityGuard) enabled() bool {
 func (g *cardinalityGuard) observe(ts metrics.TimeSeries) bool {
 	if g == nil || g.limit <= 0 || g.tripped.Load() {
 		return false
+	}
+	if ts.Metric != nil && g.exempt != nil {
+		if _, ok := g.exempt[ts.Metric.Name]; ok {
+			return false
+		}
 	}
 
 	g.mu.Lock()
